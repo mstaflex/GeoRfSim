@@ -22,6 +22,7 @@ import {
   shadowSigma, gasAttenuation, gpp, alHourani,
 } from './rf/models.js';
 import { FadingProcess, estimateK } from './rf/fading.js';
+import { createFree, freeStep, rthInput, NO_INPUT } from './freeflight.js';
 import { neighbourInterference } from './rf/interference.js';
 import { C0, DEG, TAU, rng, gauss, clamp, hashString } from './util.js';
 
@@ -73,6 +74,7 @@ class Track {
     this.t = new Float32Array(cap);
     this.margin = new Float32Array(cap * nTech);
     this.state = new Uint8Array(cap * 2);
+    this.brk = new Uint8Array(cap); // 1 = no segment from the previous point (jump)
     this.clear();
   }
 
@@ -81,11 +83,11 @@ class Track {
     this.version = (this.version || 0) + 1;
   }
 
-  push(p, margins, sPilot, sCell) {
+  push(p, margins, sPilot, sCell, brk = 0) {
     if (this.n >= this.cap) {
       const keep = Math.floor(this.cap / 2);
       const off = this.n - keep;
-      for (const a of [this.x, this.z, this.e, this.agl, this.t]) a.copyWithin(0, off, this.n);
+      for (const a of [this.x, this.z, this.e, this.agl, this.t, this.brk]) a.copyWithin(0, off, this.n);
       this.margin.copyWithin(0, off * this.nTech, this.n * this.nTech);
       this.state.copyWithin(0, off * 2, this.n * 2);
       this.n = keep;
@@ -100,6 +102,7 @@ class Track {
     for (let k = 0; k < this.nTech; k++) this.margin[i * this.nTech + k] = margins[k];
     this.state[i * 2] = sPilot;
     this.state[i * 2 + 1] = sCell;
+    this.brk[i] = brk;
   }
 }
 
@@ -164,7 +167,7 @@ export class Simulation {
   configure(partial) {
     const prev = this.cfg;
     this.cfg = { ...prev, ...partial };
-    const pathKeys = ['drone', 'pattern', 'speed', 'height', 'size', 'heading', 'center', 'avoid'];
+    const pathKeys = ['drone', 'pattern', 'speed', 'height', 'size', 'heading', 'center', 'avoid', 'profile'];
     if (pathKeys.some((k) => k in partial && JSON.stringify(partial[k]) !== JSON.stringify(prev[k]))) this.rebuild();
     else this.#aimAntennas();
   }
@@ -183,8 +186,12 @@ export class Simulation {
     const d = this.drone;
     const v = Math.max(this.flySpeed, canHover(d) ? 0.5 : d.vMin);
     this.path = buildPath(this.world, d, { ...this.cfg, speed: v });
-    if (this.path.len > 0) this.s = ((this.s || 0) % this.path.len + this.path.len) % this.path.len;
+    if (this.path.len > 0) this.s = this.path.open ? clamp(this.s || 0, 0, this.path.len) : ((this.s || 0) % this.path.len + this.path.len) % this.path.len;
     else this.s = 0;
+    const holds = this.path.holds || [];
+    this.holdIdx = holds.findIndex((hd) => hd.s > this.s + 1e-6);
+    if (this.holdIdx < 0) this.holdIdx = holds.length;
+    this.holdLeft = 0;
     this.#aimAntennas();
     this.dr = null;
     this.#updateDrone(0);
@@ -224,6 +231,17 @@ export class Simulation {
     this.lastHeading = 0;
     this.att = { pitch: 0, roll: 0 };
     this.aglCur = undefined;
+    this.vCur = undefined;
+    this.holdIdx = 0;
+    this.holdLeft = 0;
+    this.holdWp = -1;
+    this.free = null;
+    this.rth = null;
+    this.input = { ...NO_INPUT };
+    this.events = [];
+    this.breakNext = false;
+    this.freeStartT = -1;
+    this.freeEndT = Infinity;
     this.dr = null;
   }
 
@@ -242,11 +260,12 @@ export class Simulation {
   #advance(h) {
     this.prevDr = { ...this.dr };
     this.t += h;
-    const path = this.path;
-    if (path.len > 0) {
-      const v = path.vertical ? Math.min(this.flySpeed, this.drone.climb) : this.flySpeed;
-      this.s = (this.s + v * h) % path.len;
-    }
+    if (this.free) {
+      const inp = this.rth ? rthInput(this.free, this.drone, this.rth.home, this.world, this.rth) : this.input;
+      const ev = freeStep(this.free, inp, this.drone, this.world, h);
+      if (ev.bump) this.events.push({ type: 'bump', t: this.t });
+      this.lastInput = inp;
+    } else this.#follow(h);
     this.#updateDrone(h);
     this.#largeScale(h);
     // fading samples
@@ -265,13 +284,137 @@ export class Simulation {
         margins,
         this.geo.pilot.state ?? 0,
         this.geo.cell.state ?? 0,
+        this.breakNext ? 1 : 0,
       );
+      this.breakNext = false;
       this.distSinceTrack = 0;
       this.timeSinceTrack = 0;
     }
   }
 
+  /** Path following: acceleration-limited speed, per-leg speeds of flight profiles, hold points. */
+  #follow(h) {
+    const path = this.path;
+    if (!(path.len > 0)) return;
+    const d = this.drone;
+    if (this.holdLeft > 0) {
+      this.holdLeft -= h;
+      this.vCur = 0;
+      return;
+    }
+    let target;
+    if (path.speed) target = path.speed[clamp(Math.round(this.s / path.ds), 0, path.speed.length - 1)];
+    else target = path.vertical ? Math.min(this.flySpeed, d.climb) : this.flySpeed;
+    const a = d.accel || 4;
+    const hover = canHover(d);
+    // brake in time for the next hold point (on a loop possibly the first one of the next lap) or the end of an open plan
+    const holds = path.holds || [];
+    let stopAt = Infinity;
+    if (this.holdIdx < holds.length) stopAt = holds[this.holdIdx].s;
+    else if (path.open) stopAt = path.len;
+    else if (holds.length) stopAt = path.len + holds[0].s;
+    if (hover && stopAt < Infinity) target = Math.min(target, Math.max(Math.sqrt(2 * a * Math.max(stopAt - this.s, 0)), 0.4));
+    if (this.vCur === undefined) this.vCur = target;
+    this.vCur += clamp(target - this.vCur, -a * h, a * h);
+    if (!hover) this.vCur = Math.max(this.vCur, d.vMin || 0);
+    let s1 = this.s + this.vCur * h;
+    if (this.holdIdx < holds.length && holds[this.holdIdx].s <= s1) {
+      s1 = holds[this.holdIdx].s;
+      this.holdLeft = holds[this.holdIdx].t;
+      this.holdWp = holds[this.holdIdx].wp;
+      this.holdIdx++;
+      this.vCur = 0;
+    }
+    if (path.open) {
+      if (s1 >= path.len) {
+        s1 = path.len;
+        this.vCur = 0;
+      }
+    } else if (s1 >= path.len) {
+      s1 -= path.len;
+      this.holdIdx = 0;
+      if (holds.length && holds[0].s <= s1) {
+        s1 = holds[0].s;
+        this.holdLeft = holds[0].t;
+        this.holdWp = holds[0].wp;
+        this.holdIdx = 1;
+        this.vCur = 0;
+      }
+    }
+    this.s = s1;
+  }
+
+  /** Hand the sticks to the user: the drone continues from where it is. */
+  startFree() {
+    if (this.free || !this.dr) return;
+    this.free = createFree(this.dr);
+    this.input = { ...NO_INPUT };
+    this.rth = null;
+    this.freeStartT = this.t;
+    this.freeEndT = Infinity;
+  }
+
+  /** Back to the selected pattern, resuming at the path point closest to the drone. */
+  stopFree() {
+    if (!this.free) return;
+    const d = this.dr;
+    this.free = null;
+    this.rth = null;
+    this.freeEndT = this.t;
+    this.aglCur = d.agl;
+    const path = this.path;
+    let best = 0;
+    let bd = Infinity;
+    for (let i = 0; i < path.x.length; i++) {
+      const dd = Math.hypot(path.x[i] - d.x, path.z[i] - d.z);
+      if (dd < bd) {
+        bd = dd;
+        best = i;
+      }
+    }
+    this.s = path.len > 0 ? best * path.ds : 0;
+    this.vCur = undefined;
+    this.rebuild();
+    this.breakNext = bd > 15;
+  }
+
+  /** Return-to-home on/off (free flight only). Home is a free spot 6 m from the pilot, on the drone's side. */
+  setRth(on) {
+    if (!this.free) return;
+    if (!on) this.rth = null;
+    else if (!this.rth) {
+      const f = this.free;
+      const w = this.world;
+      const p = w.pilot;
+      const a = Math.atan2(f.z - p.z, f.x - p.x);
+      let home = { x: p.x, z: p.z };
+      for (const da of [0, 0.8, -0.8, 1.6, -1.6, Math.PI]) {
+        const x = p.x + Math.cos(a + da) * 6;
+        const z = p.z + Math.sin(a + da) * 6;
+        if (w.obstacleTop(x, z, 2) < 0.5) {
+          home = { x, z };
+          break;
+        }
+      }
+      this.rth = { phase: 'climb', alt: Math.max(f.y - w.elevAt(f.x, f.z), 40), home };
+    }
+  }
+
+  /** Mean packet error rate of a technology over the last `sec` seconds. */
+  recentPer(idx, sec = 1) {
+    const ts = this.techStates[idx];
+    const n = Math.min(ts.count, Math.round(sec * FS));
+    if (!n) return 0;
+    let sum = 0;
+    for (let i = 1; i <= n; i++) sum += ts.per[(ts.head - i + W) % W];
+    return sum / n;
+  }
+
   #updateDrone(h) {
+    if (this.free) {
+      this.#updateFree();
+      return;
+    }
     const d = this.drone;
     const p = samplePath(this.path, this.s, this.ps || (this.ps = {}));
     let x = p.x;
@@ -284,7 +427,7 @@ export class Simulation {
       this.aglCur += clamp(agl - this.aglCur, -1.5 * up, up);
     }
     agl = this.aglCur;
-    if (this.path.hover) {
+    if (this.path.hover || this.holdLeft > 0 || (this.path.open && this.s >= this.path.len)) {
       const t = this.t;
       x += 0.35 * Math.sin(0.71 * t) + 0.1 * Math.sin(2.3 * t);
       z += 0.35 * Math.cos(0.53 * t) + 0.1 * Math.cos(1.9 * t);
@@ -326,6 +469,30 @@ export class Simulation {
       pitch: this.att.pitch,
       roll: this.att.roll,
       body: bodyAxes(hd, this.att.pitch, this.att.roll),
+      t: this.t,
+    };
+  }
+
+  #updateFree() {
+    const f = this.free;
+    const e = this.world.elevAt(f.x, f.z);
+    this.lastHeading = f.yaw;
+    this.aglCur = f.y - e;
+    this.att = { pitch: f.pitch, roll: f.roll };
+    this.dr = {
+      x: f.x,
+      z: f.z,
+      e,
+      agl: f.y - e,
+      y: f.y,
+      vx: f.vx,
+      vy: f.vy,
+      vz: f.vz,
+      speed: Math.hypot(f.vx, f.vy, f.vz),
+      heading: f.yaw,
+      pitch: f.pitch,
+      roll: f.roll,
+      body: bodyAxes(f.yaw, f.pitch, f.roll),
       t: this.t,
     };
   }
@@ -448,8 +615,10 @@ export class Simulation {
     return ANTENNAS[this.cfg.gsAnt === 'auto' ? tech.gsAnt : this.cfg.gsAnt] || ANTENNAS[tech.gsAnt];
   }
 
+  /** User override > the airframe's own antenna > the technology's typical antenna. */
   #airAntenna(tech) {
-    return ANTENNAS[this.cfg.airAnt === 'auto' ? tech.airAnt : this.cfg.airAnt] || ANTENNAS[tech.airAnt];
+    const own = this.drone.airAnt && this.drone.airAnt !== 'auto' ? this.drone.airAnt : tech.airAnt;
+    return ANTENNAS[this.cfg.airAnt === 'auto' ? own : this.cfg.airAnt] || ANTENNAS[tech.airAnt];
   }
 
   /** Large-scale link of one technology; everything the sampler and the UI need. */

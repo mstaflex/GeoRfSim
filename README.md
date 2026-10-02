@@ -8,6 +8,9 @@ sight, terrain, buildings, vegetation, ground reflection, scattering,
 shadowing, antennas, interference and Doppler. It also judges ten radio
 technologies, from LoRa to 5G mmWave, on the same flight.
 
+You can also draw your own waypoint flight plans on the map, define your own
+airframes, or take the sticks and fly the drone yourself.
+
 It does **not** trace rays. Geometry only decides *whether* the direct path is
 clear, clipped, through foliage or blocked. Established models then decide
 *how much* each mechanism costs. A Rician/Rayleigh fading process turns the
@@ -47,7 +50,10 @@ Everything applies immediately. There are no "apply" buttons.
 | Speed, height, pattern size | sliders. Height is a log slider (1 m – 1 km) with presets 2 / 10 / 30 / 60 / 120 / 300 m |
 | Play, pause, time warp | `Space`, `,` / `.` (×0.25 … ×20), `R` restarts and clears the track |
 | Camera | drag: orbit · right-drag or Shift: pan · wheel: zoom · double-click: look there |
-| Camera modes | Orbit, Follow, Chase, Top, Pilot view (`C` cycles, `F` `T` `P`) |
+| Camera modes | Orbit, Follow, Chase, Top, Pilot view, FPV (`C` cycles, `F` `T` `P`) |
+| Flight profiles | ✎ next to *Pattern*: waypoint plans drawn on the map (`E` toggles map editing). See below |
+| Drone profiles | ✎ next to *Drone*: your own airframes, based on a built-in one |
+| Free flight | *Free flight* button or `G`: fly with keyboard, game pad, RC transmitter or the on-screen sticks |
 | Move things | "Move: Pattern centre / Pilot / Cell site", then click the 3-D view or the minimap |
 | Technology in detail | click a row in the table, or `↑` / `↓` |
 | Antennas | ground and drone antenna selects in the *Antennas* card. *Auto* uses each technology's typical antenna |
@@ -55,8 +61,10 @@ Everything applies immediately. There are no "apply" buttons.
 | Region | EU / US switch above the table (frequencies and Tx powers) |
 
 The URL carries the scenario, drone, pattern, speed, height, size, centre,
-technology and antennas, so a link reproduces the setup. Display settings are
-remembered in `localStorage`.
+technology and antennas, so a link reproduces the setup. When a custom drone or
+a flight profile is in use, the link carries it too, so the recipient gets
+them without any files. Display settings, flight profiles, custom drones and
+free-flight preferences are remembered in `localStorage`, in this browser only.
 
 ### What you see
 
@@ -90,6 +98,79 @@ remembered in `localStorage`.
   subcarrier spacing, PER, throughput (DL/UL for cellular), and a verdict
   (*Excellent … No link*) with its reasons.
 
+## Flight profiles, drone profiles and free flight
+
+![Flight profile editor: a street survey with alternating heights and a 10 s hold, edited directly in the 3-D view](docs/profiles.jpg)
+
+**Flight profiles** are waypoint plans. Every waypoint has a height above
+ground, the speed of the leg that starts there and an optional hold (hover
+time). At the last waypoint the drone loops back to the first, flies the plan
+back and forth, or stops and hovers. Open the editor with ✎ next to the
+pattern, switch on *Edit on map* (`E`) and click on the ground (Top view, `T`,
+is easiest). Drag a marker to move it. Right-click or `Delete` removes it. The
+table edits the numbers, and *All heights / All speeds* set every waypoint at
+once. The planned path is drawn with its rounded corners while the editor is
+open, and edits apply to the running flight immediately.
+
+* Corners are flown with the turn radius the airframe needs at that speed.
+  Multirotors stop exactly on hold points, and they stop and turn on hairpins
+  (> 150°). Speeds change at the airframe's acceleration, and the drone brakes
+  in time for a hold.
+* Fixed wings cannot hold or stop, so their plans always loop and holds are
+  ignored. The editor warns about this, about legs faster than the drone, about
+  climbs steeper than its climb rate and about waypoints off the map.
+* *New from current pattern* turns any built-in pattern into editable
+  waypoints. *New from last free flight* turns your own flight into a
+  repeatable plan (Douglas-Peucker simplification of the flown track, with the
+  speeds you flew).
+* Profiles belong to the scenario they were drawn on. Selecting one made for
+  another map switches to that map. Profiles appear in the *Pattern* select and
+  travel as JSON files (*Export* / *Import*) or inside a link (*Copy link*).
+
+**Drone profiles.** Built-in airframes are read-only templates. *Duplicate*
+(or *New*) gives an editable copy: type (multirotor, fixed wing, VTOL), look,
+cruise / max / stall speed, climb rate, acceleration, max tilt or bank, size
+and the antenna on board (*Auto* keeps each radio's typical antenna). Below the
+fields the editor shows what follows from them: turn radius at cruise and at
+max speed, stopping distance, turn rate at max bank and the largest Doppler
+shift at 868 MHz, 2.4 GHz and 5.8 GHz. Changes apply live when that drone is
+flying.
+
+![Free flight behind a ridge: the ELRS control link is gone, so the failsafe takes over and flies home](docs/freeflight.jpg)
+
+**Free flight** (`G`) hands you the sticks, starting from wherever the drone
+is. The on-screen display shows altitude, vertical speed, speed, heading,
+distance and direction home, the control link quality and the flight mode,
+plus both sticks.
+
+| Input | Throttle / yaw | Pitch / roll | Notes |
+| --- | --- | --- | --- |
+| Keyboard (Mode 2) | `W` `S` / `A` `D` | `↑` `↓` / `←` `→` | `Shift` for fine control. A fixed wing's throttle stays where you leave it |
+| Game pad, Mode 2 or Mode 1 | sticks | sticks | Y / △ toggles return home |
+| RC transmitter over USB (EdgeTX, OpenTX …) | AETR or TAER channel order | | appears as a joystick. *Invert pitch* if needed |
+| On-screen sticks | drag the left stick | drag the right stick | touch or mouse. Phones get large thumb sticks |
+
+* Multirotors fly like a GPS drone in position mode. The sticks command
+  velocity, the airframe accelerates within its limit and tilts accordingly,
+  and centred sticks hold position and altitude. Fixed wings fly coordinated
+  turns (turn rate = g·tan φ / v) and never drop below stall speed.
+* Ground and buildings are solid, and the drone bumps off walls. Tree crowns are
+  not solid, so under-canopy flight is possible. Altitude is barometric, so
+  hills come closer when you fly towards them.
+* **Return home** (`H`, or the button) climbs to at least 40 m and over
+  whatever stands in the way, flies back and lands 6 m from the pilot. A fixed
+  wing circles overhead instead. Moving a stick takes control back.
+* **Failsafe.** With *failsafe RTH* on, the chosen control link (ELRS 2.4 GHz
+  by default, any technology can be picked) is watched. When it loses more than
+  90 % of its packets for a second, the drone stops hearing the sticks and
+  returns home. This comes from the simulated link, so a ridge, a building or
+  a long distance triggers it, not a timer.
+* The **FPV** camera rides on the airframe, tilted up 15°. The horizon rolls and
+  pitches with the drone.
+* Leaving free flight (`G`) resumes the selected pattern at the point closest
+  to the drone. The jump is left out of the drawn track. *Save as flight
+  profile* keeps the flight.
+
 ## Height scale
 
 Heights above ground are drawn logarithmically: `y = H · log10(1 + h / h₀)`.
@@ -118,15 +199,17 @@ building blocks, trees and routes. Generation takes about 0.1 s.
 
 ## Drones and patterns
 
-| Drone | Type | Cruise / max | Notes |
-| --- | --- | --- | --- |
-| Mini quad (<250 g) | multirotor | 8 / 16 m/s | 30° max tilt |
-| Prosumer quad (Mavic class) | multirotor | 12 / 21 m/s | |
-| Enterprise quad (M350 class) | multirotor | 10 / 23 m/s | |
-| FPV racer (5-inch) | multirotor | 22 / 40 m/s | 60° tilt: strong attitude effects |
-| Heavy-lift hexa (agri) | multirotor | 6 / 10 m/s | |
-| Fixed-wing mapper | fixed wing | 16 / 25 m/s | min 11 m/s, banks in turns, cannot hover |
-| VTOL long-range | VTOL | 22 / 30 m/s | |
+| Drone | Type | Cruise / max | Accel. | Notes |
+| --- | --- | --- | --- | --- |
+| Mini quad (<250 g) | multirotor | 8 / 16 m/s | 5 m/s² | 30° max tilt |
+| Prosumer quad (Mavic class) | multirotor | 12 / 21 m/s | 6 m/s² | |
+| Enterprise quad (M350 class) | multirotor | 10 / 23 m/s | 5 m/s² | |
+| FPV racer (5-inch) | multirotor | 22 / 40 m/s | 15 m/s² | 60° tilt: strong attitude effects |
+| Heavy-lift hexa (agri) | multirotor | 6 / 10 m/s | 3 m/s² | |
+| Fixed-wing mapper | fixed wing | 16 / 25 m/s | 2.5 m/s² | min 11 m/s, banks in turns, cannot hover |
+| VTOL long-range | VTOL | 22 / 30 m/s | 3 m/s² | |
+
+Your own airframes and waypoint plans are made in the editors described above.
 
 Patterns: hover, out & back (range test from the pilot), orbit, figure 8,
 survey (lawnmower), vertical profile, spiral climb, and a scenario route
@@ -202,15 +285,19 @@ app/
   index.html, css/style.css, favicon.svg
   js/
     main.js        UI controller: state, controls, render loop, panels, table
-    sim.js         simulation engine: geometry, per-technology link, fading samples, 5 s stats, track
-    flight.js      drone profiles, patterns, obstacle-safe height profile, attitude
+    sim.js         simulation engine: geometry, per-technology link, fading samples, 5 s stats, track,
+                   path following (holds, leg speeds, acceleration), free flight and RTH hand-over
+    flight.js      drone profiles, patterns, waypoint plans → paths, obstacle-safe height profile, attitude
+    freeflight.js  manual flight dynamics (multirotor position mode, fixed wing), collisions, return home
+    profiles.js    custom drones & flight profiles: validation, storage, link encoding, JSON, conversions
     world.js       procedural world: terrain, land use, buildings, trees, LOS profile queries
     scenarios.js   the six scenarios
     charts.js      2-D charts: distribution, history, antenna polar, minimap
     util.js        seeded RNG, noise, Bessel functions, formatting
     rf/            models.js, antennas.js, fading.js, tech.js, interference.js
     gfx/           renderer.js (WebGL2), camera.js, meshes.js, gl.js, mat.js
-tests/             node:test unit tests (models, antennas, fading, worlds, simulation)
+    ui/            flight-editor.js, drone-editor.js, pilot.js (free-flight input & OSD), dom.js
+tests/             node:test unit tests (models, antennas, fading, worlds, simulation, profiles, free flight)
 Dockerfile, nginx.conf, docker-compose.yml
 ```
 
@@ -225,7 +312,10 @@ changes.
 The app has **no runtime dependencies**: no framework, no
 npm or pip package at runtime, no CDN, no fonts from elsewhere, no tracking, no
 cookies and no backend. That is what allows a strict Content-Security-Policy
-without `unsafe-inline` or `unsafe-eval`.
+without `unsafe-inline` or `unsafe-eval`. Profiles stay in the browser's
+`localStorage`. Everything that comes in from storage, a link or an imported
+file goes through a sanitizer that clamps every number and drops unknown
+fields. Text is only ever inserted as text, never as HTML.
 
 | Measure | Where |
 | --- | --- |

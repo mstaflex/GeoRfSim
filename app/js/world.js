@@ -444,6 +444,18 @@ export class World {
     return need;
   }
 
+  /** Highest obstacle (roof or tree top) within r metres of (x, z), in metres above ground. */
+  obstacleTop(x, z, r = 8) {
+    let top = 0;
+    for (let dz = -r; dz <= r; dz += r) {
+      for (let dx = -r; dx <= r; dx += r) {
+        const id = this.idx(x + dx, z + dz);
+        top = Math.max(top, this.bldg[id], this.canopy[id]);
+      }
+    }
+    return top;
+  }
+
   /** Ground constants at a point (for the ground reflection). */
   surfaceAt(x, z) {
     return GROUND[this.landAt(x, z)] || GROUND[0];

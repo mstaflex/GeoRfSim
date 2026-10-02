@@ -391,6 +391,8 @@ export class Renderer {
     this.track = new LineSet(this, 4096);
     this.drops = new LineSet(this, 1024);
     this.ray = new LineSet(this, 256);
+    this.plan = new LineSet(this, 1024);
+    this.marks = new LineSet(this, 256);
     this.lobeCache = new Map();
     this.droneMeshes = new Map();
     this.trackState = { version: -1, n: 0, colorKey: '' };
@@ -598,10 +600,12 @@ export class Renderer {
     const segs = Math.max(n - 1, 0);
     this.track.ensure(segs);
     let prevC = from > 0 ? colorOf(from) : null;
+    const none = [0, 0, 0, 0];
     for (let i = from; i < segs; i++) {
       const ca = prevC || colorOf(i);
       const cb = colorOf(i + 1);
-      this.track.set(i, track.x[i], track.z[i], track.e[i], track.agl[i], track.x[i + 1], track.z[i + 1], track.e[i + 1], track.agl[i + 1], ca, cb);
+      const gap = track.brk && track.brk[i + 1];
+      this.track.set(i, track.x[i], track.z[i], track.e[i], track.agl[i], track.x[i + 1], track.z[i + 1], track.e[i + 1], track.agl[i + 1], gap ? none : ca, gap ? none : cb);
       prevC = cb;
     }
     this.track.upload(from, segs);
@@ -625,19 +629,25 @@ export class Renderer {
 
   /** Sets the ray lines (LOS curve, reflection path): list of [x,z,e,agl,colour] points per polyline. */
   setRays(polylines) {
+    this.setLines('ray', polylines);
+  }
+
+  /** Replaces a line set ('ray', 'plan' or 'marks') with polylines of [x, z, e, agl, colour] points. */
+  setLines(name, polylines) {
+    const set = this[name];
     let n = 0;
     for (const pl of polylines) n += Math.max(pl.length - 1, 0);
-    this.ray.ensure(n);
+    set.ensure(n);
     let k = 0;
     for (const pl of polylines) {
       for (let i = 0; i + 1 < pl.length; i++) {
         const a = pl[i];
         const b = pl[i + 1];
-        this.ray.set(k++, a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3], a[4], b[4]);
+        set.set(k++, a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3], a[4], b[4]);
       }
     }
-    this.ray.upload(0, k);
-    this.ray.n = k;
+    set.upload(0, k);
+    set.n = k;
   }
 
   #droneMesh(model) {
@@ -768,9 +778,11 @@ export class Renderer {
     const d = state.drone;
     const dm = this.#droneMesh(d.model);
     const dPos = this.display(d.x, d.z, d.e, d.agl);
-    const dScale = w.S / 95;
+    // the airframe is drawn far larger than life; its span only nudges the size
+    const dScale = (w.S / 95) * Math.min(Math.max(Math.pow((d.span || 0.5) / 0.5, 0.35), 0.7), 1.6);
     const droneModel = fromBasis(mat4(), dPos, d.body.X, d.body.Y, d.body.Z, dScale);
-    this.#drawMesh(dm.solid, droneModel);
+    const showDrone = !state.hideDrone;
+    if (showDrone) this.#drawMesh(dm.solid, droneModel);
 
     // lines
     gl.enable(gl.BLEND);
@@ -796,12 +808,14 @@ export class Renderer {
     gl.depthMask(true);
     if (this.layers.track) drawLines(this.track, 3, 0, [1, 1, 1, 1]);
     if (this.ray.n) drawLines(this.ray, 2.5, 0, [1, 1, 1, 1]);
+    if (this.plan.n) drawLines(this.plan, 2, 0, [1, 1, 1, 1]);
+    if (this.marks.n) drawLines(this.marks, 3.5, 0, [1, 1, 1, 1]);
 
     // transparent: rotors, lobes
     gl.depthMask(false);
     gl.useProgram(m.p);
     gl.uniform1f(m.u.uAlpha, 1);
-    this.#drawMesh(dm.rotors, droneModel);
+    if (showDrone) this.#drawMesh(dm.rotors, droneModel);
     if (this.layers.lobes) {
       gl.uniform1f(m.u.uAlpha, 0.42);
       for (const lb of state.lobes || []) {
@@ -813,9 +827,11 @@ export class Renderer {
     if (this.layers.xray) {
       gl.disable(gl.DEPTH_TEST);
       gl.uniform1f(m.u.uAlpha, 0.3);
-      this.#drawMesh(dm.solid, droneModel);
+      if (showDrone) this.#drawMesh(dm.solid, droneModel);
       gl.useProgram(L.p);
       if (this.ray.n) drawLines(this.ray, 1.8, 0, [1, 1, 1, 0.55]);
+      if (this.plan.n) drawLines(this.plan, 1.5, 0, [1, 1, 1, 0.45]);
+      if (this.marks.n) drawLines(this.marks, 2.5, 0, [1, 1, 1, 0.6]);
       if (this.layers.track) drawLines(this.track, 2, 0, [1, 1, 1, 0.38]);
       gl.enable(gl.DEPTH_TEST);
     }

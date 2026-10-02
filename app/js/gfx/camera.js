@@ -2,7 +2,7 @@
 import { perspective, lookAt, multiply, invert, mat4 } from './mat.js';
 import { clamp } from '../util.js';
 
-export const CAMERA_MODES = ['orbit', 'follow', 'chase', 'top', 'pilot'];
+export const CAMERA_MODES = ['orbit', 'follow', 'chase', 'top', 'pilot', 'fpv'];
 
 export class OrbitCamera {
   constructor() {
@@ -49,6 +49,15 @@ export class OrbitCamera {
     } else if (this.mode === 'pilot' && ctx.pilot && ctx.drone) {
       eye = ctx.pilot;
       target = ctx.drone;
+    } else if (this.mode === 'fpv' && ctx.drone && ctx.body) {
+      // camera fixed to the frame, tilted up 15°: the horizon rolls and pitches with the drone
+      const b = ctx.body;
+      const c = Math.cos(0.26);
+      const s = Math.sin(0.26);
+      const dir = [b.X[0] * c + b.Y[0] * s, b.X[1] * c + b.Y[1] * s, b.X[2] * c + b.Y[2] * s];
+      eye = [ctx.drone[0], ctx.drone[1] + (ctx.lift || 0), ctx.drone[2]];
+      target = [eye[0] + dir[0] * 100, eye[1] + dir[1] * 100, eye[2] + dir[2] * 100];
+      up = b.Y;
     } else {
       const p = this.mode === 'top' ? 1.5697 : this.pitch;
       const y = this.mode === 'top' ? -Math.PI / 2 : this.yaw;
@@ -61,7 +70,7 @@ export class OrbitCamera {
     }
     this.eye = eye;
     const d = Math.hypot(eye[0] - target[0], eye[1] - target[1], eye[2] - target[2]);
-    const near = Math.max(0.5, d * 0.004);
+    const near = this.mode === 'fpv' ? 0.3 : Math.max(0.5, d * 0.004);
     perspective(this.proj, this.fov, aspect, near, Math.max(d * 8, 30000));
     lookAt(this.view, eye, target, up);
     multiply(this.vp, this.proj, this.view);
@@ -69,7 +78,7 @@ export class OrbitCamera {
   }
 
   orbit(dx, dy) {
-    if (this.mode === 'pilot' || this.mode === 'top') this.mode = 'orbit';
+    if (this.mode === 'pilot' || this.mode === 'top' || this.mode === 'fpv') this.mode = 'orbit';
     this.yaw += dx * 0.006;
     this.pitch = clamp(this.pitch + dy * 0.005, 0.03, 1.55);
   }
@@ -91,7 +100,7 @@ export class OrbitCamera {
 
 /** Pointer, wheel and touch handling for the 3-D canvas. */
 export class CameraControls {
-  constructor(el, cam, { onChange, onDoubleClick, onClick }) {
+  constructor(el, cam, { onChange, onDoubleClick, onClick, intercept, onContext }) {
     this.el = el;
     this.cam = cam;
     this.onChange = onChange;
@@ -99,8 +108,13 @@ export class CameraControls {
     this.lastPinch = null;
     this.moved = 0;
 
-    el.addEventListener('contextmenu', (e) => e.preventDefault());
+    el.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (onContext) onContext(e.clientX, e.clientY, e);
+    });
     el.addEventListener('pointerdown', (e) => {
+      // e.g. dragging a waypoint: the camera leaves this pointer alone
+      if (intercept && intercept(e)) return;
       el.setPointerCapture(e.pointerId);
       this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, button: e.button, shift: e.shiftKey });
       this.moved = 0;

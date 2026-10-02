@@ -630,7 +630,7 @@ export class Minimap {
     for (const b of world.buildings) c.fillRect((b.x0 + world.half) * s, (b.z0 + world.half) * s, Math.max((b.x1 - b.x0) * s, 1), Math.max((b.z1 - b.z0) * s, 1));
   }
 
-  /** st: { track, colorOf, path, pilot, cell, drone, heading, view: {x, z, yaw} } */
+  /** st: { track, colorOf, path, pilot, cell, drone, heading, view: {x, z, yaw}, waypoints?, selected? } */
   draw(st) {
     const w = this.world;
     if (!w) return;
@@ -668,6 +668,14 @@ export class Minimap {
       let [px, py] = P(t.x[0], t.z[0]);
       for (let i = step; i < t.n; i += step) {
         const [x, y] = P(t.x[i], t.z[i]);
+        // a jump (e.g. back from free flight to the pattern) leaves a gap
+        let gap = false;
+        if (t.brk) for (let j = i - step + 1; j <= i; j++) gap = gap || t.brk[j] === 1;
+        if (gap) {
+          px = x;
+          py = y;
+          continue;
+        }
         const c = st.colorOf(i);
         ctx.strokeStyle = `rgb(${c[0] * 255 | 0},${c[1] * 255 | 0},${c[2] * 255 | 0})`;
         ctx.beginPath();
@@ -677,6 +685,19 @@ export class Minimap {
         px = x;
         py = y;
       }
+    }
+    // waypoints of the flight profile being edited
+    if (st.waypoints && st.waypoints.length) {
+      ctx.lineWidth = 1.5;
+      st.waypoints.forEach((wp, i) => {
+        const [x, y] = P(wp.x, wp.z);
+        ctx.fillStyle = i === st.selected ? '#f9b31a' : '#ffffff';
+        ctx.strokeStyle = COL.surface;
+        ctx.beginPath();
+        ctx.arc(x, y, i === st.selected ? 4 : 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      });
     }
     // camera view direction
     if (st.view) {

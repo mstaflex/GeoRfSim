@@ -12,13 +12,13 @@ export const G = 9.81;
 const PATH_DS = 2;
 
 export const DRONES = [
-  { id: 'mini', name: 'Mini quad (<250 g)', type: 'multi', vMax: 16, vCruise: 8, climb: 4, maxTilt: 30, span: 0.25, model: 'quad' },
-  { id: 'prosumer', name: 'Prosumer quad (Mavic class)', type: 'multi', vMax: 21, vCruise: 12, climb: 6, maxTilt: 35, span: 0.38, model: 'quad' },
-  { id: 'enterprise', name: 'Enterprise quad (M350 class)', type: 'multi', vMax: 23, vCruise: 10, climb: 6, maxTilt: 30, span: 0.9, model: 'quadL' },
-  { id: 'fpv', name: 'FPV racer (5-inch)', type: 'multi', vMax: 40, vCruise: 22, climb: 20, maxTilt: 60, span: 0.22, model: 'fpv' },
-  { id: 'heavy', name: 'Heavy-lift hexa (agri)', type: 'multi', vMax: 10, vCruise: 6, climb: 3, maxTilt: 20, span: 1.8, model: 'hexa' },
-  { id: 'fixedwing', name: 'Fixed-wing mapper', type: 'fixed', vMin: 11, vMax: 25, vCruise: 16, climb: 4, maxBank: 35, span: 1.2, model: 'plane' },
-  { id: 'vtol', name: 'VTOL long-range', type: 'vtol', vMin: 0, vMax: 30, vCruise: 22, climb: 4, maxBank: 30, maxTilt: 15, span: 2.4, model: 'vtol' },
+  { id: 'mini', name: 'Mini quad (<250 g)', type: 'multi', vMax: 16, vCruise: 8, climb: 4, accel: 5, maxTilt: 30, span: 0.25, model: 'quad', airAnt: 'auto' },
+  { id: 'prosumer', name: 'Prosumer quad (Mavic class)', type: 'multi', vMax: 21, vCruise: 12, climb: 6, accel: 6, maxTilt: 35, span: 0.38, model: 'quad', airAnt: 'auto' },
+  { id: 'enterprise', name: 'Enterprise quad (M350 class)', type: 'multi', vMax: 23, vCruise: 10, climb: 6, accel: 5, maxTilt: 30, span: 0.9, model: 'quadL', airAnt: 'auto' },
+  { id: 'fpv', name: 'FPV racer (5-inch)', type: 'multi', vMax: 40, vCruise: 22, climb: 20, accel: 15, maxTilt: 60, span: 0.22, model: 'fpv', airAnt: 'auto' },
+  { id: 'heavy', name: 'Heavy-lift hexa (agri)', type: 'multi', vMax: 10, vCruise: 6, climb: 3, accel: 3, maxTilt: 20, span: 1.8, model: 'hexa', airAnt: 'auto' },
+  { id: 'fixedwing', name: 'Fixed-wing mapper', type: 'fixed', vMin: 11, vMax: 25, vCruise: 16, climb: 4, accel: 2.5, maxBank: 35, span: 1.2, model: 'plane', airAnt: 'auto' },
+  { id: 'vtol', name: 'VTOL long-range', type: 'vtol', vMin: 0, vMax: 30, vCruise: 22, climb: 4, accel: 3, maxBank: 30, maxTilt: 15, span: 2.4, model: 'vtol', airAnt: 'auto' },
 ];
 export const DRONE_BY_ID = Object.fromEntries(DRONES.map((d) => [d.id, d]));
 
@@ -32,7 +32,9 @@ export const PATTERNS = [
   { id: 'spiral', name: 'Spiral climb', size: 'Diameter' },
   { id: 'route', name: 'Scenario route', size: null },
 ];
-export const PATTERN_BY_ID = Object.fromEntries(PATTERNS.map((p) => [p.id, p]));
+/** Waypoint flight plans (flight profiles) fly as pattern 'custom'. */
+export const CUSTOM_PATTERN = { id: 'custom', name: 'Flight profile', size: null };
+export const PATTERN_BY_ID = Object.fromEntries([...PATTERNS, CUSTOM_PATTERN].map((p) => [p.id, p]));
 
 /** Smallest turn radius the airframe flies at speed v. */
 export function minTurnRadius(drone, v) {
@@ -45,7 +47,10 @@ export const canHover = (drone) => drone.type !== 'fixed';
 
 // ----------------------------------------------------------------- path building
 
-/** Rounds polyline corners with arcs of radius r (shrunk where segments are short) and samples it. */
+/**
+ * Rounds polyline corners with arcs of radius r (shrunk where segments are short) and samples it.
+ * A point may carry its own corner radius as third element ([x, z, r]); 0 keeps a sharp corner.
+ */
 function filletPolyline(input, r, closed) {
   const out = [];
   const pts = input.filter((p, k) => k === 0 || dist(p, input[k - 1]) > 0.5);
@@ -79,8 +84,14 @@ function filletPolyline(input, r, closed) {
       corner.push(null);
       continue;
     }
-    let t = r * Math.tan(phi / 2);
-    t = Math.min(t, 0.48 * lu, 0.48 * lv);
+    const rk = B[2] ?? r;
+    if (rk <= 0) {
+      corner.push(null);
+      continue;
+    }
+    // never cut a corner by more than twice the turn radius (hairpins turn near the vertex)
+    let t = rk * Math.tan(phi / 2);
+    t = Math.min(t, 2 * rk, 0.48 * lu, 0.48 * lv);
     const rr = t / Math.tan(phi / 2);
     const p0 = [B[0] - (ux / lu) * t, B[1] - (uz / lu) * t];
     const p1 = [B[0] + (vx / lv) * t, B[1] + (vz / lv) * t];
@@ -173,6 +184,7 @@ export function buildPath(world, drone, cfg) {
   let vertical = false;
   let hover = false;
   const pattern = cfg.pattern;
+  if (pattern === 'custom') return buildProfilePath(world, drone, cfg);
 
   if (pattern === 'hover' && canHover(drone)) {
     hover = true;
@@ -263,7 +275,111 @@ export function buildPath(world, drone, cfg) {
   return path;
 }
 
-function resample(pts, agl, h) {
+/**
+ * Waypoint flight plan → path. Each waypoint carries a height above ground (h),
+ * the speed of the leg that starts there (v) and an optional hold (s). End
+ * behaviour: 'loop' closes back to the first waypoint, 'reverse' flies the
+ * plan back and forth, 'stop' ends at the last waypoint (hover; fixed wings
+ * loop instead). Corners are rounded with the turn radius the airframe needs
+ * at the local speed; multirotors stop sharp at hold points.
+ */
+function buildProfilePath(world, drone, cfg) {
+  const prof = cfg.profile;
+  const wps = (prof && prof.waypoints) || [];
+  const hover = canHover(drone);
+  const vEnv = (v) => clamp(v, drone.vMin || 0.5, drone.vMax);
+  if (wps.length < 2) {
+    const w = wps[0] || { x: cfg.center[0], z: cfg.center[1], h: cfg.height, v: cfg.speed };
+    const pts = hover ? [[w.x, w.z], [w.x, w.z]] : circle(w.x, w.z, Math.max(minTurnRadius(drone, vEnv(w.v)) * 1.15, 25));
+    const path = resample(pts, null, w.h, pts.map(() => vEnv(w.v)));
+    path.hover = hover;
+    path.vertical = false;
+    path.holds = [];
+    if (cfg.avoid) liftOverObstacles(world, drone, path, vEnv(w.v));
+    return path;
+  }
+  let verts = wps.map((w, i) => ({ ...w, hold: hover ? w.hold || 0 : 0, idx: i }));
+  let closed = true;
+  if (prof.end === 'reverse') {
+    // back the same way: each leg keeps the speed it had on the way out
+    const m = verts.length;
+    verts[m - 1] = { ...verts[m - 1], v: wps[m - 2].v };
+    for (let k = m - 2; k >= 1; k--) verts.push({ ...wps[k], hold: hover ? wps[k].hold || 0 : 0, idx: k, v: wps[k - 1].v });
+  } else if (prof.end === 'stop' && hover) closed = false;
+  const n = verts.length;
+  const legV = (k) => vEnv(verts[((k % n) + n) % n].v);
+  // a multirotor flies a hairpin (> 150°) like a real one: stop on the waypoint, turn, go back
+  const turnBack = verts.map((w, k) => {
+    if (!hover || (!closed && (k === 0 || k === n - 1))) return false;
+    const a = verts[(k - 1 + n) % n];
+    const b = verts[(k + 1) % n];
+    const ux = w.x - a.x;
+    const uz = w.z - a.z;
+    const vx = b.x - w.x;
+    const vz = b.z - w.z;
+    const l = Math.hypot(ux, uz) * Math.hypot(vx, vz);
+    return l > 0 && (ux * vx + uz * vz) / l < Math.cos((150 * Math.PI) / 180);
+  });
+  const corner = verts.map((w, k) => {
+    if (w.hold > 0 || turnBack[k]) return 0;
+    const v = Math.max(legV(k - 1), legV(k));
+    return Math.max(minTurnRadius(drone, v), hover ? 3 : 15);
+  });
+  const poly = verts.map((w, k) => [w.x, w.z, corner[k]]);
+  if (closed) poly.push([verts[0].x, verts[0].z, corner[0]]);
+  const pts = filletPolyline(poly, 0, closed);
+
+  // carry height and leg speed along the rounded polyline by projecting onto the original legs;
+  // the arc length where a leg begins is where the drone passes its waypoint (holds stop there)
+  const segs = closed ? n : n - 1;
+  const aglArr = new Float64Array(pts.length);
+  const spdArr = new Float64Array(pts.length);
+  const legStart = new Float64Array(n).fill(-1);
+  legStart[0] = 0;
+  let seg = 0;
+  let cum = 0;
+  const project = (p, k) => {
+    const a = verts[k % n];
+    const b = verts[(k + 1) % n];
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    const t = clamp(((p[0] - a.x) * dx + (p[1] - a.z) * dz) / (dx * dx + dz * dz || 1), 0, 1);
+    return { t, d: Math.hypot(p[0] - (a.x + dx * t), p[1] - (a.z + dz * t)) };
+  };
+  for (let i = 0; i < pts.length; i++) {
+    if (i) cum += dist(pts[i - 1], pts[i]);
+    let best = project(pts[i], seg);
+    // legs only advance; look a few ahead so very short legs are not skipped
+    for (let k = seg + 1; k < Math.min(seg + 4, segs); k++) {
+      const c = project(pts[i], k);
+      if (c.d < best.d - 1e-6 || (c.d <= best.d + 1e-6 && best.t > 0.999)) {
+        best = c;
+        for (let j = seg + 1; j <= k; j++) if (legStart[j] < 0) legStart[j] = cum;
+        seg = k;
+      }
+    }
+    const a = verts[seg % n];
+    const b = verts[(seg + 1) % n];
+    aglArr[i] = a.h + (b.h - a.h) * best.t;
+    spdArr[i] = legV(seg);
+  }
+  const path = resample(pts, aglArr, cfg.height, spdArr);
+  path.vertical = false;
+  path.hover = false;
+  path.open = !closed;
+  path.holds = [];
+  // holds, and zero-length stops where a multirotor turns back
+  for (let k = 0; k < n; k++) {
+    if ((verts[k].hold > 0 || turnBack[k]) && legStart[k] >= 0) path.holds.push({ s: Math.min(legStart[k], path.len), t: verts[k].hold, wp: verts[k].idx });
+  }
+  // an open plan ends at its last waypoint: hold there for good
+  if (!closed && verts[n - 1].hold > 0) path.holds.push({ s: path.len, t: verts[n - 1].hold, wp: verts[n - 1].idx });
+  path.holds.sort((a, b) => a.s - b.s);
+  if (cfg.avoid) liftOverObstacles(world, drone, path, cfg.speed);
+  return path;
+}
+
+function resample(pts, agl, h, spd = null) {
   const n = pts.length;
   const cum = new Float64Array(n);
   for (let k = 1; k < n; k++) cum[k] = cum[k - 1] + dist(pts[k - 1], pts[k]);
@@ -272,7 +388,8 @@ function resample(pts, agl, h) {
     return {
       x: Float64Array.of(pts[0][0], pts[0][0]),
       z: Float64Array.of(pts[0][1], pts[0][1]),
-      agl: Float64Array.of(h, h),
+      agl: Float64Array.of(agl ? agl[0] : h, agl ? agl[0] : h),
+      speed: spd ? Float64Array.of(spd[0], spd[0]) : null,
       curv: new Float64Array(2),
       len: 0,
       ds: 1,
@@ -283,6 +400,7 @@ function resample(pts, agl, h) {
   const x = new Float64Array(m);
   const z = new Float64Array(m);
   const a = new Float64Array(m);
+  const v = spd ? new Float64Array(m) : null;
   let k = 0;
   for (let i = 0; i < m; i++) {
     const s = i * ds;
@@ -292,6 +410,7 @@ function resample(pts, agl, h) {
     x[i] = pts[k][0] + (pts[k + 1][0] - pts[k][0]) * t;
     z[i] = pts[k][1] + (pts[k + 1][1] - pts[k][1]) * t;
     a[i] = agl ? agl[k] + (agl[k + 1] - agl[k]) * t : h;
+    if (v) v[i] = t < 0.5 ? spd[k] : spd[k + 1];
   }
   // signed curvature from heading change (positive = right turn on the map)
   const curv = new Float64Array(m);
@@ -316,7 +435,7 @@ function resample(pts, agl, h) {
     }
     c2[i] = s / c;
   }
-  return { x, z, agl: a, curv: c2, len, ds };
+  return { x, z, agl: a, speed: v, curv: c2, len, ds };
 }
 
 /** Raises the height profile over obstacles, anticipating climbs at the airframe's climb rate. */
@@ -328,14 +447,14 @@ function liftOverObstacles(world, drone, path, v) {
     for (let i = 0; i < n; i++) path.agl[i] = Math.max(path.agl[i], need[i]);
     return;
   }
-  const slope = (drone.climb * 0.8) / v;
-  const step = slope * path.ds;
+  // allowed height change per sample at the local speed and the airframe's climb rate
+  const step = (i) => ((drone.climb * 0.8) / Math.max(path.speed ? path.speed[i] : v, 0.5)) * path.ds;
   const out = Float64Array.from(need);
   for (let round = 0; round < 2; round++) {
-    for (let i = n - 2; i >= 0; i--) out[i] = Math.max(out[i], out[i + 1] - step);
-    out[n - 1] = Math.max(out[n - 1], out[0] - step);
-    for (let i = 1; i < n; i++) out[i] = Math.max(out[i], out[i - 1] - step * 1.5);
-    out[0] = Math.max(out[0], out[n - 1] - step * 1.5);
+    for (let i = n - 2; i >= 0; i--) out[i] = Math.max(out[i], out[i + 1] - step(i));
+    if (!path.open) out[n - 1] = Math.max(out[n - 1], out[0] - step(n - 1));
+    for (let i = 1; i < n; i++) out[i] = Math.max(out[i], out[i - 1] - step(i) * 1.5);
+    if (!path.open) out[0] = Math.max(out[0], out[n - 1] - step(0) * 1.5);
   }
   path.agl = out;
 }
@@ -356,10 +475,10 @@ export function samplePath(path, s, out = {}) {
     out.dagl = 0;
     return out;
   }
-  let u = s % len;
+  let u = path.open ? clamp(s, 0, len) : s % len;
   if (u < 0) u += len;
   const f = u / path.ds;
-  const i = Math.min(Math.floor(f), n - 2);
+  const i = Math.max(0, Math.min(Math.floor(f), n - 2));
   const t = f - i;
   out.x = path.x[i] + (path.x[i + 1] - path.x[i]) * t;
   out.z = path.z[i] + (path.z[i + 1] - path.z[i]) * t;

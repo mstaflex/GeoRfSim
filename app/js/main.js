@@ -3,6 +3,13 @@ import { World } from './world.js';
 import { SCENARIOS, SCENARIO_BY_ID } from './scenarios.js';
 import { DRONES, DRONE_BY_ID, PATTERNS, PATTERN_BY_ID, canHover } from './flight.js';
 import { Simulation, STATE_LABELS, HIST_S } from './sim.js';
+import {
+  loadCustomDrones, customDrones, registerDrone, saveCustomDrones, encodeProfile, decodeProfile, encodeDrone, decodeDrone,
+} from './profiles.js';
+import { FlightEditor } from './ui/flight-editor.js';
+import { DroneEditor } from './ui/drone-editor.js';
+import { PilotUI } from './ui/pilot.js';
+import { $, el } from './ui/dom.js';
 import { TECHS } from './rf/tech.js';
 import {
   ANTENNAS, GROUND_ANTENNA_IDS, AIR_ANTENNA_IDS, axesFromAzTilt, gainWorld, gainLocal, airGainBody, sectorGain,
@@ -14,13 +21,6 @@ import { rampColor } from './gfx/meshes.js';
 import { DistChart, HistoryChart, PolarChart, Minimap, COL } from './charts.js';
 import { clamp, fmtHz, fmtRate, fmtDist, fmtPct } from './util.js';
 
-const $ = (id) => document.getElementById(id);
-function el(tag, cls, text) {
-  const n = document.createElement(tag);
-  if (cls) n.className = cls;
-  if (text !== undefined) n.textContent = text;
-  return n;
-}
 const hex = (h, a = 1) => [parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255, a];
 const css = (c) => `rgb(${Math.round(c[0] * 255)},${Math.round(c[1] * 255)},${Math.round(c[2] * 255)})`;
 const sign = (v, d = 1) => (Number.isFinite(v) ? `${v > 0.049 ? '+' : v < -0.049 ? '−' : ''}${Math.abs(v).toFixed(d)}` : '–');
@@ -36,7 +36,7 @@ const MARGIN_BUCKETS = [
   [-Infinity, COL.critical, '< −6 dB'],
 ];
 const ANT_ID = new Map(Object.entries(ANTENNAS).map(([k, v]) => [v, k]));
-const CAMS = [['orbit', 'Orbit'], ['follow', 'Follow'], ['chase', 'Chase'], ['top', 'Top'], ['pilot', 'Pilot view']];
+const CAMS = [['orbit', 'Orbit'], ['follow', 'Follow'], ['chase', 'Chase'], ['top', 'Top'], ['pilot', 'Pilot view'], ['fpv', 'FPV']];
 const PLACES = [['center', 'Pattern centre'], ['pilot', 'Pilot'], ['cell', 'Cell site']];
 
 const store = {
@@ -71,7 +71,7 @@ const state = {
   camMode: 'follow',
   place: null,
   cfg: {
-    drone: 'prosumer', pattern: 'route', speed: 8, height: 15, size: 400, heading: 0, center: [0, 0], avoid: true,
+    drone: 'prosumer', pattern: 'route', speed: 8, height: 15, size: 400, heading: 0, center: [0, 0], avoid: true, profileId: null, profile: null,
     region: 'eu', gsAnt: 'auto', airAnt: 'auto', pilotH: 1.5, interference: true, load: 0.5, shadowing: true, fading: true,
   },
   view: { ...DEFAULT_VIEW, ...savedView, layers: { ...DEFAULT_VIEW.layers, ...(savedView.layers || {}) } },
@@ -82,6 +82,18 @@ const state = {
 function readHash() {
   const h = new URLSearchParams(location.hash.slice(1));
   const out = { cfg: {} };
+  // a custom drone or flight profile may travel inside the link
+  if (h.has('dc')) {
+    const d = decodeDrone(h.get('dc'));
+    if (d) {
+      registerDrone(d);
+      saveCustomDrones();
+    }
+  }
+  if (h.has('fp')) {
+    const p = decodeProfile(h.get('fp'));
+    if (p && p.waypoints.length) out.profile = p;
+  }
   const s = h.get('s');
   if (s && SCENARIO_BY_ID[s]) out.scenario = s;
   const map = { d: 'drone', p: 'pattern', ga: 'gsAnt', aa: 'airAnt', r: 'region' };
@@ -94,6 +106,10 @@ function readHash() {
   }
   if (out.cfg.drone && !DRONE_BY_ID[out.cfg.drone]) delete out.cfg.drone;
   if (out.cfg.pattern && !PATTERN_BY_ID[out.cfg.pattern]) delete out.cfg.pattern;
+  if (out.cfg.pattern === 'custom') {
+    if (out.profile) Object.assign(out.cfg, { profileId: out.profile.id, profile: out.profile });
+    else delete out.cfg.pattern;
+  }
   if (out.cfg.gsAnt && out.cfg.gsAnt !== 'auto' && !GROUND_ANTENNA_IDS.includes(out.cfg.gsAnt)) delete out.cfg.gsAnt;
   if (out.cfg.airAnt && out.cfg.airAnt !== 'auto' && !AIR_ANTENNA_IDS.includes(out.cfg.airAnt)) delete out.cfg.airAnt;
   if (out.cfg.region && !['eu', 'us'].includes(out.cfg.region)) delete out.cfg.region;
@@ -102,19 +118,29 @@ function readHash() {
   return out;
 }
 
+/** Hash parameters of a setup; `,` `;` `~` stay readable (they are legal in a fragment). */
+function hashOf({ scenario = state.scenario, cfg = state.cfg, primary = state.primary } = {}) {
+  const c = cfg;
+  const p = {
+    s: scenario, d: c.drone, p: c.pattern, v: +c.speed.toFixed(1), h: +c.height.toFixed(1), z: Math.round(c.size),
+    hd: Math.round(c.heading), c: c.center.map((v) => Math.round(v)).join(','), t: primary, r: c.region,
+    ga: c.gsAnt, aa: c.airAnt, ph: c.pilotH,
+  };
+  const drone = DRONE_BY_ID[c.drone];
+  if (drone?.custom) p.dc = encodeDrone(drone);
+  if (c.pattern === 'custom' && c.profile) p.fp = encodeProfile(c.profile);
+  return Object.entries(p)
+    .map(([k, v]) => `${k}=${encodeURIComponent(v).replace(/%2C/gi, ',').replace(/%3B/gi, ';')}`)
+    .join('&');
+}
+
 let hashTimer = 0;
 function writeHash() {
   clearTimeout(hashTimer);
-  hashTimer = setTimeout(() => {
-    const c = state.cfg;
-    const p = new URLSearchParams({
-      s: state.scenario, d: c.drone, p: c.pattern, v: +c.speed.toFixed(1), h: +c.height.toFixed(1), z: Math.round(c.size),
-      hd: Math.round(c.heading), c: c.center.map((v) => Math.round(v)).join(','), t: state.primary, r: c.region,
-      ga: c.gsAnt, aa: c.airAnt, ph: c.pilotH,
-    });
-    history.replaceState(null, '', `#${p}`);
-  }, 250);
+  hashTimer = setTimeout(() => history.replaceState(null, '', `#${hashOf()}`), 250);
 }
+
+const linkWith = (over) => `${location.origin}${location.pathname}#${hashOf(over)}`;
 
 function saveView() {
   store.set('georfsim.view', state.view);
@@ -145,6 +171,7 @@ function getWorld(id) {
   return worlds.get(id);
 }
 
+loadCustomDrones();
 const fromHash = readHash();
 if (fromHash.scenario) state.scenario = fromHash.scenario;
 const scn0 = SCENARIO_BY_ID[state.scenario];
@@ -154,11 +181,51 @@ if (fromHash.primary) state.primary = fromHash.primary;
 else state.primary = defaultPrimary(state.scenario);
 
 const sim = new Simulation(getWorld(state.scenario), state.cfg);
+
+// what the editors and the free-flight UI may use (functions are hoisted; nothing runs before the page is set up)
+const ui = {
+  sim,
+  state,
+  get flightEditor() {
+    return flightEditor;
+  },
+  setCfg: (partial, restart) => setCfg(partial, restart),
+  setCam: (mode) => setCam(mode),
+  syncControls: () => syncControls(),
+  toast: (msg) => toast(msg),
+  markDirty: () => {
+    dirty = true;
+  },
+  drone: () => DRONE_BY_ID[state.cfg.drone],
+  droneOf: () => DRONE_BY_ID[state.cfg.drone],
+  pick: (x, y) => renderer.pick(x, y),
+  project: (x, z, agl) => renderer.project(renderer.display(x, z, sim.world.elevAt(x, z), agl)),
+  canvasRect: () => canvas.getBoundingClientRect(),
+  onDrawer: (name, open) => onDrawer(name, open),
+  flyProfile: (p) => flyProfile(p),
+  profileEdited: (p) => profileEdited(p),
+  profileRemoved: (id) => profileRemoved(id),
+  refreshPatterns: () => refreshPatterns(),
+  linkFor: (p) => linkWith({
+    scenario: SCENARIO_BY_ID[p.scenario] ? p.scenario : state.scenario,
+    cfg: { ...state.cfg, pattern: 'custom', profileId: p.id, profile: p },
+  }),
+  setDrone: (id) => setDrone(id),
+  droneEdited: (d) => droneEdited(d),
+  droneRemoved: (id) => droneRemoved(id),
+  refreshDrones: () => refreshDrones(),
+  linkForDrone: (d) => linkWith({ cfg: { ...state.cfg, drone: d.id, speed: d.vCruise } }),
+};
+const flightEditor = new FlightEditor(ui);
+const droneEditor = new DroneEditor(ui);
+const pilot = new PilotUI(ui);
+if (fromHash.profile) flightEditor.upsert(fromHash.profile);
 const distChart = new DistChart($('chart-dist'), $('tip-dist'));
 const histChart = new HistoryChart($('chart-hist'), $('tip-hist'));
 const polarChart = new PolarChart($('chart-polar'));
 const minimap = new Minimap($('minimap'), (x, z) => {
   if (state.place) placeAt(x, z);
+  else if (flightEditor.mapEdit) flightEditor.addAt(x, z);
   else {
     const w = sim.world;
     cam.mode = 'orbit';
@@ -218,6 +285,8 @@ function loadScenario(id, { defaults = true } = {}) {
   cam.frame(world.S, renderer.display(cx, cz, world.elevAt(cx, cz), 0));
   cam.dist = world.S * (state.camMode === 'follow' ? 0.38 : 0.75);
   cam.mode = state.camMode;
+  refreshPatterns();
+  if (flightEditor.isOpen) flightEditor.render();
   syncControls();
   writeHash();
   dirty = true;
@@ -238,6 +307,58 @@ function setCfg(partial, restart = false) {
   dirty = true;
 }
 
+// the simulation flies its own copy, so edits only take effect through setCfg
+const cloneProfile = (p) => ({ ...p, waypoints: p.waypoints.map((w) => ({ ...w })) });
+
+/** Flies a flight profile; one made for another map switches there first (keeping the drone). */
+function flyProfile(p) {
+  if (!p || !p.waypoints.length) return;
+  if (SCENARIO_BY_ID[p.scenario] && p.scenario !== state.scenario) {
+    const drone = state.cfg.drone;
+    loadScenario(p.scenario);
+    state.cfg.drone = drone;
+  }
+  setCfg({ pattern: 'custom', profileId: p.id, profile: cloneProfile(p) }, true);
+  toast(`Flying “${p.name}”`);
+}
+
+function profileEdited(p) {
+  if (state.cfg.pattern === 'custom' && state.cfg.profileId === p.id) setCfg({ profile: cloneProfile(p) });
+  refreshPatterns();
+}
+
+function profileRemoved(id) {
+  if (state.cfg.pattern === 'custom' && state.cfg.profileId === id) {
+    setCfg({ pattern: SCENARIO_BY_ID[state.scenario].defaults.pattern, profileId: null, profile: null }, true);
+  }
+}
+
+function setDrone(id) {
+  const d = DRONE_BY_ID[id];
+  if (!d) return;
+  // in free flight the new airframe takes over in the air
+  setCfg({ drone: d.id, speed: d.vCruise }, !sim.free);
+  toast(`${d.name}: cruise ${d.vCruise} m/s, max ${d.vMax} m/s`);
+  if (droneEditor.isOpen) droneEditor.render();
+  if (flightEditor.isOpen) flightEditor.render();
+}
+
+/** A custom drone changed in the editor: if it is flying, its path and limits follow at once. */
+function droneEdited(d) {
+  if (state.cfg.drone !== d.id) return;
+  state.cfg.speed = clamp(state.cfg.speed, d.vMin || 0, d.vMax);
+  sim.configure({ speed: state.cfg.speed });
+  sim.rebuild();
+  if (flightEditor.isOpen) flightEditor.render();
+  syncControls();
+  writeHash();
+  dirty = true;
+}
+
+function droneRemoved(id) {
+  if (state.cfg.drone === id) setDrone(SCENARIO_BY_ID[state.scenario].defaults.drone);
+}
+
 // ------------------------------------------------------------------ top-bar controls
 
 const selScenario = $('sel-scenario');
@@ -254,8 +375,45 @@ SCENARIOS.forEach((s, i) => {
   o.title = s.blurb;
   selScenario.append(o);
 });
-DRONES.forEach((d) => selDrone.append(new Option(d.name, d.id)));
-PATTERNS.forEach((p) => selPattern.append(new Option(p.name, p.id)));
+function optgroup(label, options) {
+  const g = document.createElement('optgroup');
+  g.label = label;
+  g.append(...options);
+  return g;
+}
+
+function refreshDrones() {
+  selDrone.textContent = '';
+  const builtIn = DRONES.map((d) => new Option(d.name, d.id));
+  const customs = customDrones();
+  if (customs.length) selDrone.append(optgroup('Built-in', builtIn), optgroup('Custom', customs.map((d) => new Option(d.name, d.id))));
+  else selDrone.append(...builtIn);
+  selDrone.value = state.cfg.drone;
+}
+
+/** Patterns, then the flight profiles of this map, then those made for other maps. */
+function refreshPatterns() {
+  selPattern.textContent = '';
+  selPattern.append(optgroup('Patterns', PATTERNS.map((p) => new Option(p.name, p.id))));
+  const opt = (p, suffix = '') => {
+    const o = new Option(`${p.name}${suffix}${p.waypoints.length ? '' : ' (no waypoints)'}`, `fp:${p.id}`);
+    o.disabled = !p.waypoints.length;
+    return o;
+  };
+  const here = flightEditor.profiles.filter((p) => !SCENARIO_BY_ID[p.scenario] || p.scenario === state.scenario);
+  const other = flightEditor.profiles.filter((p) => SCENARIO_BY_ID[p.scenario] && p.scenario !== state.scenario);
+  if (here.length) selPattern.append(optgroup('Flight profiles', here.map((p) => opt(p))));
+  if (other.length) selPattern.append(optgroup('Flight profiles · other maps', other.map((p) => opt(p, ` · ${SCENARIO_BY_ID[p.scenario].name.split(' ·')[0]}`))));
+  syncPatternValue();
+}
+
+function syncPatternValue() {
+  const c = state.cfg;
+  selPattern.value = c.pattern === 'custom' ? `fp:${c.profileId}` : c.pattern;
+}
+
+refreshDrones();
+refreshPatterns();
 WARPS.forEach((w) => selWarp.append(new Option(`×${w}`, String(w))));
 for (const group of [...new Set(TECHS.map((t) => t.group))]) {
   const og = document.createElement('optgroup');
@@ -279,12 +437,13 @@ const sliderToHeight = (v) => {
 };
 
 selScenario.addEventListener('change', () => loadScenario(selScenario.value));
-selDrone.addEventListener('change', () => {
-  const d = DRONE_BY_ID[selDrone.value];
-  setCfg({ drone: d.id, speed: d.vCruise }, true);
-  toast(`${d.name}: cruise ${d.vCruise} m/s, max ${d.vMax} m/s`);
+selDrone.addEventListener('change', () => setDrone(selDrone.value));
+selPattern.addEventListener('change', () => {
+  const v = selPattern.value;
+  if (v.startsWith('fp:')) flyProfile(flightEditor.byId(v.slice(3)));
+  else setCfg({ pattern: v, profileId: null, profile: null }, true);
+  syncPatternValue();
 });
-selPattern.addEventListener('change', () => setCfg({ pattern: selPattern.value }, true));
 rngSpeed.addEventListener('input', () => setCfg({ speed: +rngSpeed.value }));
 rngHeight.addEventListener('input', () => setCfg({ height: sliderToHeight(+rngHeight.value) }));
 rngSize.addEventListener('input', () => setCfg({ size: +rngSize.value }));
@@ -294,14 +453,22 @@ selWarp.addEventListener('change', () => {
 selPrimary.addEventListener('change', () => setPrimary(selPrimary.value));
 $('btn-play').addEventListener('click', togglePlay);
 $('btn-restart').addEventListener('click', restart);
+$('btn-free').addEventListener('click', () => pilot.toggle());
 
 function togglePlay() {
   state.playing = !state.playing;
   syncControls();
 }
+/** New flight from the pattern's start; a free flight starts again from there too. */
 function restart() {
+  const free = pilot.active;
   sim.reset();
   sim.rebuild();
+  if (free) {
+    sim.startFree();
+    pilot.failsafe = false;
+  }
+  syncControls();
   dirty = true;
 }
 function setPrimary(id) {
@@ -317,21 +484,34 @@ function syncControls() {
   const c = state.cfg;
   const d = DRONE_BY_ID[c.drone];
   const pat = PATTERN_BY_ID[c.pattern];
+  const free = !!sim.free;
+  // a flight profile brings its own heights and speeds; in free flight the sticks decide
+  const own = free || c.pattern === 'custom';
   selScenario.value = state.scenario;
   selDrone.value = c.drone;
-  selPattern.value = c.pattern;
+  syncPatternValue();
   rngSpeed.min = String(d.vMin || 0);
   rngSpeed.max = String(d.vMax);
   rngSpeed.value = String(c.speed);
   const flown = sim.flySpeed;
-  $('out-speed').textContent = `${flown.toFixed(flown < 10 ? 1 : 0)} m/s${c.pattern === 'climb' && canHover(d) ? ' ↕' : ''}`;
+  const ownText = free ? 'manual' : 'per waypoint';
+  $('out-speed').textContent = own ? ownText : `${flown.toFixed(flown < 10 ? 1 : 0)} m/s${c.pattern === 'climb' && canHover(d) ? ' ↕' : ''}`;
   rngHeight.value = String(heightToSlider(c.height));
-  $('out-height').textContent = `${c.height < 10 ? c.height.toFixed(1) : Math.round(c.height)} m`;
+  $('out-height').textContent = own ? ownText : `${c.height < 10 ? c.height.toFixed(1) : Math.round(c.height)} m`;
   rngSize.value = String(c.size);
   $('out-size').textContent = fmtDist(c.size);
   $('lbl-size').textContent = pat.size || 'Size';
-  $('ctl-size').style.opacity = pat.size ? '1' : '0.4';
-  rngSize.disabled = !pat.size;
+  const off = { 'ctl-speed': own, 'ctl-height': own, 'ctl-size': !pat.size || free };
+  for (const [id, isOff] of Object.entries(off)) {
+    $(id).classList.toggle('is-off', isOff);
+    for (const i of $(id).querySelectorAll('input, button')) i.disabled = isOff;
+  }
+  const freeBtn = $('btn-free');
+  freeBtn.setAttribute('aria-pressed', String(free));
+  freeBtn.textContent = free ? 'Exit free flight' : 'Free flight';
+  $('osd').hidden = !free;
+  $('viewport').classList.toggle('is-free', free);
+  syncDrawerButtons();
   selWarp.value = String(state.warp);
   const play = $('btn-play');
   play.textContent = state.playing ? '❚❚' : '▶';
@@ -422,6 +602,7 @@ new CameraControls(canvas, cam, {
     }
   },
   onDoubleClick: (x, y) => {
+    if (flightEditor.mapEdit) return;
     const p = renderer.pick(x, y);
     if (!p) return;
     cam.mode = 'orbit';
@@ -431,9 +612,15 @@ new CameraControls(canvas, cam, {
     dirty = true;
   },
   onClick: (x, y) => {
-    if (!state.place) return;
-    const p = renderer.pick(x, y);
-    if (p) placeAt(p.x, p.z);
+    if (state.place) {
+      const p = renderer.pick(x, y);
+      if (p) placeAt(p.x, p.z);
+    } else if (flightEditor.mapEdit) flightEditor.click(x, y);
+  },
+  // waypoint markers can be dragged while editing on the map; right-click deletes one
+  intercept: (e) => flightEditor.intercept(e),
+  onContext: (x, y) => {
+    if (flightEditor.mapEdit) flightEditor.context(x, y);
   },
 });
 
@@ -561,12 +748,31 @@ buildSettings();
 const topbar = document.querySelector('.topbar');
 new ResizeObserver(() => document.documentElement.style.setProperty('--top', `${topbar.offsetHeight}px`)).observe(topbar);
 
+// settings, flight profiles and drone profiles share the right edge: one drawer at a time
 function toggleDrawer(open = $('settings').hidden) {
+  if (open) closeDrawers('settings');
   $('settings').hidden = !open;
-  $('btn-settings').setAttribute('aria-expanded', String(open));
+  syncDrawerButtons();
+}
+function closeDrawers(except) {
+  if (except !== 'settings') $('settings').hidden = true;
+  if (except !== 'flight' && flightEditor.isOpen) flightEditor.close();
+  if (except !== 'drone' && droneEditor.isOpen) droneEditor.close();
+  syncDrawerButtons();
+}
+function onDrawer(name, open) {
+  if (open) closeDrawers(name);
+  syncDrawerButtons();
+}
+function syncDrawerButtons() {
+  $('btn-settings').setAttribute('aria-expanded', String(!$('settings').hidden));
+  $('btn-edit-flight').setAttribute('aria-expanded', String(flightEditor.isOpen));
+  $('btn-edit-drone').setAttribute('aria-expanded', String(droneEditor.isOpen));
 }
 $('btn-settings').addEventListener('click', () => toggleDrawer());
 $('btn-settings-close').addEventListener('click', () => toggleDrawer(false));
+$('btn-edit-flight').addEventListener('click', () => flightEditor.toggle());
+$('btn-edit-drone').addEventListener('click', () => droneEditor.toggle());
 
 // ------------------------------------------------------------------ help
 
@@ -582,9 +788,14 @@ function buildHelp() {
   const keys = [
     ['Space', 'play / pause'], ['R', 'restart the flight (clears the track)'], ['1 … 6', 'scenarios'],
     ['[  ]', 'height down / up'], ['−  =', 'speed down / up'], [',  .', 'time warp slower / faster'],
-    ['↑  ↓', 'previous / next technology'], ['C', 'cycle camera: orbit, follow, chase, top, pilot'], ['F  T  P', 'follow / top / pilot view'],
+    ['↑  ↓', 'previous / next technology'], ['C', 'cycle camera: orbit, follow, chase, top, pilot, FPV'], ['F  T  P', 'follow / top / pilot view'],
     ['L', 'log ↔ linear height scale'], ['S', 'settings'], ['?', 'this help'], ['Esc', 'close / cancel'],
     ['Mouse', 'drag: orbit · right-drag or Shift: pan · wheel: zoom · double-click: look there'],
+    ['E', 'flight profiles: place waypoints on the map (click adds, drag moves, right-click deletes)'], ['Del', 'delete the selected waypoint'],
+    ['G', 'free flight on / off'],
+    ['W S  A D', 'free flight, multirotor: climb / descend, turn left / right'],
+    ['↑ ↓ ← →', 'free flight, multirotor: forward / back, left / right (Shift: fine) · fixed wing: dive / climb, bank'],
+    ['H', 'free flight: return home (again to cancel)'],
   ];
   b.append(h('Keys'));
   const t = el('table');
@@ -619,6 +830,12 @@ function buildHelp() {
     t2.append(tr);
   }
   b.append(t2);
+  b.append(
+    h('Flight profiles, drones & free flight'),
+    p('Flight profiles (✎ next to the pattern) are waypoint plans: each waypoint has a height above ground, the speed of the leg that starts there and an optional hold. At the end the drone loops, flies back and forth or stops. Switch on "Edit on map" (E), then click on the ground to add waypoints, drag them, right-click to delete; Top view (T) is easiest. Corners are flown with the turn radius the airframe needs; fixed wings cannot hold. Profiles are stored in this browser and travel as JSON files or inside a link. A pattern or a free flight can be turned into a profile.'),
+    p('Drone profiles (✎ next to the drone): duplicate a built-in airframe to edit speeds, climb rate, acceleration, tilt or bank limits, size and the on-board antenna. The editor shows what follows: turn radius, stopping distance, maximum Doppler shift.'),
+    p('Free flight (G) hands you the sticks: keyboard in Mode-2 layout, a game pad, or an RC transmitter connected by USB as a joystick (AETR or TAER channel order). Multirotors fly like a GPS drone in position mode; fixed wings fly coordinated turns and cannot stall. Ground and buildings are solid. Return home (H) climbs over obstacles, flies back and lands next to the pilot. With "failsafe RTH" on, the drone stops hearing your sticks and returns home when the chosen control link loses more than 90 % of its packets for a second - the simulated link, not a timer. The FPV camera rides on the airframe.'),
+  );
   b.append(h('Reading the verdict'), p('Each technology is judged from the last 5 s of samples: the 10 % SINR point against its most robust mode, the packet error rate, and the data rate it needs (video, telemetry, C2). Reasons list what limits it - blockage, interference, Doppler, delay spread or fading. Tx powers follow EU (ETSI) or US (FCC) practice and are assumptions, not certifications.'));
 }
 buildHelp();
@@ -634,17 +851,30 @@ $('help').addEventListener('click', (e) => {
 // ------------------------------------------------------------------ keyboard
 
 window.addEventListener('keydown', (e) => {
-  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement || e.metaKey || e.ctrlKey || e.altKey) return;
+  const tgt = e.target;
+  if (tgt instanceof HTMLInputElement || tgt instanceof HTMLSelectElement || tgt instanceof HTMLTextAreaElement || e.metaKey || e.ctrlKey || e.altKey) return;
+  // free flight owns W A S D, the arrows, Shift and H while it is on
+  if (pilot.keyDown(e)) {
+    e.preventDefault();
+    return;
+  }
   const k = e.key;
   const c = state.cfg;
+  const own = !!sim.free || c.pattern === 'custom';
   let handled = true;
   if (k === ' ') togglePlay();
   else if (k === 'r' || k === 'R') restart();
   else if (k >= '1' && k <= '6') loadScenario(SCENARIOS[+k - 1].id);
+  else if (own && '[]-=+'.includes(k)) toast(sim.free ? 'In free flight the sticks set height and speed' : 'Heights and speeds come from the flight profile (✎)');
   else if (k === '[') setCfg({ height: Math.max(1, +(c.height / 1.25).toFixed(1)) });
   else if (k === ']') setCfg({ height: Math.min(1000, +(c.height * 1.25).toFixed(1)) });
   else if (k === '-') setCfg({ speed: Math.max(DRONE_BY_ID[c.drone].vMin || 0, c.speed - 1) });
   else if (k === '=' || k === '+') setCfg({ speed: Math.min(DRONE_BY_ID[c.drone].vMax, c.speed + 1) });
+  else if (k === 'g' || k === 'G') pilot.toggle();
+  else if (k === 'e' || k === 'E') {
+    if (!flightEditor.isOpen) flightEditor.open();
+    flightEditor.setMapEdit(!flightEditor.mapEdit);
+  } else if ((k === 'Delete' || k === 'Backspace') && flightEditor.isOpen && flightEditor.sel >= 0) flightEditor.remove(flightEditor.sel);
   else if (k === ',') state.warp = WARPS[Math.max(0, WARPS.indexOf(state.warp) - 1)];
   else if (k === '.') state.warp = WARPS[Math.min(WARPS.length - 1, WARPS.indexOf(state.warp) + 1)];
   else if (k === 'ArrowUp' || k === 'ArrowDown') {
@@ -662,9 +892,12 @@ window.addEventListener('keydown', (e) => {
   } else if (k === 's' || k === 'S') toggleDrawer();
   else if (k === '?' || k === 'h' || k === 'H') toggleHelp();
   else if (k === 'Escape') {
-    state.place = null;
-    toggleHelp(false);
-    toggleDrawer(false);
+    if (flightEditor.mapEdit) flightEditor.setMapEdit(false);
+    else {
+      state.place = null;
+      toggleHelp(false);
+      closeDrawers();
+    }
   } else handled = false;
   if (handled) {
     e.preventDefault();
@@ -732,10 +965,10 @@ function updateRays() {
     }
     lines.push(pts);
   }
-  // the drone's own drop line: reads its 3-D position against the ground
+  // the drone's own drop line: reads its 3-D position against the ground (not from the drone's own camera)
   const de = w.elevAt(d.x, d.z);
   const white = [1, 1, 1, 0.85];
-  lines.push([[d.x, d.z, de, 0, [1, 1, 1, 0.25]], [d.x, d.z, de, d.agl, white]]);
+  if (cam.mode !== 'fpv') lines.push([[d.x, d.z, de, 0, [1, 1, 1, 0.25]], [d.x, d.z, de, d.agl, white]]);
   const ls = sim.techStates[primaryIdx()].ls;
   if (lay.refl && g.refl?.valid && ls) {
     const mag = Math.hypot(ls.gr, ls.gi);
@@ -786,7 +1019,8 @@ function buildLobes() {
   const airId = ANT_ID.get(air);
   const airMesh = renderer.lobe(`air:${airId}`, (x, y, z) => airGainBody(air, [x, y, z]), air.g);
   const d = sim.dr;
-  out.push({ mesh: airMesh, pos: renderer.display(d.x, d.z, d.e, d.agl), axes: d.body, scale: S / 34 });
+  // seen from the drone's own camera its lobe would fill the screen
+  if (cam.mode !== 'fpv') out.push({ mesh: airMesh, pos: renderer.display(d.x, d.z, d.e, d.agl), axes: d.body, scale: S / 34 });
   return out;
 }
 
@@ -828,7 +1062,7 @@ function updateLabels() {
   const ls = sim.techStates[primaryIdx()].ls;
   const pd = renderer.project(renderer.display(d.x, d.z, d.e, d.agl + 3));
   const pp = renderer.project(renderer.display(p.x, p.z, w.elevAt(p.x, p.z), Math.max(state.cfg.pilotH, 2) + 3));
-  place(labels.drone, pd, `${Math.round(d.agl)} m AGL|${ls ? `${num(ls.sinrLsDb, 0)} dB · ${TECHS[primaryIdx()].name}` : ''}`);
+  place(labels.drone, cam.mode === 'fpv' ? null : pd, `${Math.round(d.agl)} m AGL|${ls ? `${num(ls.sinrLsDb, 0)} dB · ${TECHS[primaryIdx()].name}` : ''}`);
   place(labels.pilot, pp, `Pilot|${state.cfg.pilotH} m antenna`);
   // keep the pilot label readable when the drone is right above/next to it
   const close = pd && pp && Math.abs(pd[0] - pp[0]) < 130 && Math.abs(pd[1] - pp[1]) < 44;
@@ -1214,25 +1448,44 @@ function updateTable() {
 let last = performance.now();
 let panelT = 1;
 let tableT = 1;
+const NO_LINES = [];
+let shownPlan = NO_LINES;
 function frame(now) {
   const dt = Math.min((now - last) / 1000, 0.1);
   last = now;
-  if (state.playing) sim.step(dt * state.warp);
+  if (state.playing) {
+    pilot.update(dt);
+    sim.step(dt * state.warp);
+  }
+  if (!sim.free && !$('osd').hidden) syncControls(); // free flight ended by a reset or a new scenario
   const d = sim.dr;
   const w = sim.world;
+  const airframe = DRONE_BY_ID[state.cfg.drone];
   if (state.playing || dirty || cam.mode !== 'orbit') {
     renderer.syncTrack(sim.track, colorOf, colorKey());
     updateRays();
+    // waypoint plan and markers while the flight-profile editor is open
+    const ov = flightEditor.overlay();
+    const plan = ov.plan.length ? ov.plan : NO_LINES;
+    if (plan !== shownPlan) {
+      renderer.setLines('plan', plan);
+      shownPlan = plan;
+    }
+    renderer.setLines('marks', ov.marks);
     const p = w.pilot;
     const toward = Math.atan2(d.z - p.z, d.x - p.x);
     const pilotEye = renderer.display(p.x - Math.cos(toward) * 6, p.z - Math.sin(toward) * 6, w.elevAt(p.x, p.z), 2.5);
+    const dPos = renderer.display(d.x, d.z, d.e, d.agl);
     cam.update(canvas.clientWidth / Math.max(canvas.clientHeight, 1), {
-      drone: renderer.display(d.x, d.z, d.e, d.agl),
+      drone: dPos,
       heading: d.heading,
       pilot: pilotEye,
+      body: d.body,
+      lift: renderer.display(d.x, d.z, d.e, d.agl + 0.3)[1] - dPos[1],
     }, dt);
     renderer.render(cam, {
-      drone: { ...d, model: DRONE_BY_ID[state.cfg.drone].model },
+      drone: { ...d, model: airframe.model, span: airframe.span },
+      hideDrone: cam.mode === 'fpv',
       pilotH: state.cfg.pilotH,
       cellAz0: sim.cellAz0,
       lobes: buildLobes(),
@@ -1248,8 +1501,10 @@ function frame(now) {
     updatePanel();
     updateLegend();
     minimap.draw({
-      track: sim.track, colorOf, path: sim.path, pilot: w.pilot, cell: w.cellSite, drone: d, heading: d.heading,
+      track: sim.track, colorOf, path: sim.free ? null : sim.path, pilot: w.pilot, cell: w.cellSite, drone: d, heading: d.heading,
       view: { x: (cam.target[0]), z: cam.target[2], yaw: cam.mode === 'top' ? -Math.PI / 2 : cam.yaw },
+      waypoints: flightEditor.isOpen && flightEditor.cur ? flightEditor.cur.waypoints : null,
+      selected: flightEditor.sel,
     });
   }
   if (tableT > 0.35) {
@@ -1265,4 +1520,4 @@ syncControls();
 requestAnimationFrame(frame);
 
 // for debugging in the console
-window.georfsim = { sim, renderer, cam, state, updatePanel, updateTable };
+window.georfsim = { sim, renderer, cam, state, updatePanel, updateTable, flightEditor, droneEditor, pilot };

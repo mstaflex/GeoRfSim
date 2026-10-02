@@ -18,17 +18,23 @@
   </div>
   <div class="ctl ctl--select">
     <label for="sel-drone">Drone</label>
-    <select id="sel-drone"></select>
+    <div class="ctl__row">
+      <select id="sel-drone"></select>
+      <button type="button" class="btn btn--icon" id="btn-edit-drone" aria-expanded="false" aria-controls="drone-editor" title="Drone profiles: view, create, edit" aria-label="Edit drone profiles">✎</button>
+    </div>
   </div>
   <div class="ctl ctl--select">
     <label for="sel-pattern">Pattern</label>
-    <select id="sel-pattern"></select>
+    <div class="ctl__row">
+      <select id="sel-pattern"></select>
+      <button type="button" class="btn btn--icon" id="btn-edit-flight" aria-expanded="false" aria-controls="flight-editor" title="Flight profiles: waypoint plans you draw on the map" aria-label="Edit flight profiles">✎</button>
+    </div>
   </div>
-  <div class="ctl ctl--range">
+  <div class="ctl ctl--range" id="ctl-speed">
     <label for="rng-speed">Speed <output id="out-speed"></output></label>
     <input type="range" id="rng-speed" min="0" max="40" step="0.5">
   </div>
-  <div class="ctl ctl--range">
+  <div class="ctl ctl--range" id="ctl-height">
     <label for="rng-height">Height AGL <output id="out-height"></output></label>
     <input type="range" id="rng-height" min="0" max="1000" step="1">
     <div class="chips" id="height-chips" role="group" aria-label="Height presets"></div>
@@ -41,6 +47,7 @@
     <button type="button" class="btn btn--icon" id="btn-play" title="Play / pause (Space)" aria-label="Play or pause"></button>
     <select id="sel-warp" title="Time warp ( , and . )" aria-label="Time warp"></select>
     <button type="button" class="btn btn--icon" id="btn-restart" title="Restart flight, clear track (R)" aria-label="Restart">↺</button>
+    <button type="button" class="btn btn--toggle" id="btn-free" aria-pressed="false" title="Free flight: fly the drone yourself with keyboard, game pad or RC transmitter (G)">Free flight</button>
   </div>
   <div class="topbar__end">
     <button type="button" class="btn" id="btn-settings" aria-expanded="false" aria-controls="settings" title="Display &amp; model settings (S)">Settings</button>
@@ -61,6 +68,7 @@
       <canvas id="minimap" width="200" height="200" aria-label="Map overview: click to look there"></canvas>
     </div>
     <div class="hud hud--br legend" id="legend"></div>
+    <div class="osd" id="osd" hidden aria-label="Free-flight display"></div>
     <div class="toast" id="toast" hidden></div>
     <div class="fatal" id="fatal" hidden></div>
   </section>
@@ -173,6 +181,22 @@
     <button type="button" class="btn btn--icon" id="btn-settings-close" aria-label="Close settings">✕</button>
   </div>
   <div class="drawer__body" id="settings-body"></div>
+</aside>
+
+<aside class="drawer drawer--wide" id="flight-editor" hidden aria-label="Flight profiles">
+  <div class="drawer__head">
+    <h2>Flight profiles</h2>
+    <button type="button" class="btn btn--icon" id="fe-close" aria-label="Close flight profiles">✕</button>
+  </div>
+  <div class="drawer__body ed" id="fe-body"></div>
+</aside>
+
+<aside class="drawer" id="drone-editor" hidden aria-label="Drone profiles">
+  <div class="drawer__head">
+    <h2>Drone profiles</h2>
+    <button type="button" class="btn btn--icon" id="de-close" aria-label="Close drone profiles">✕</button>
+  </div>
+  <div class="drawer__body ed" id="de-body"></div>
 </aside>
 
 <div class="overlay" id="help" hidden role="dialog" aria-modal="true" aria-labelledby="help-title">
