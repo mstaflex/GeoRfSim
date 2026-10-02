@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="GeoRfSim – 3-D drone radio-link simulator: terrain, forests and street canyons, established propagation and fading models, and a live verdict per radio technology.">
+<meta name="color-scheme" content="dark">
+<title>GeoRfSim – drone link simulator</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand" title="GeoRfSim"><span class="brand__mark" aria-hidden="true"></span>GeoRfSim</div>
+  <div class="ctl ctl--select">
+    <label for="sel-scenario">Scenario</label>
+    <select id="sel-scenario"></select>
+  </div>
+  <div class="ctl ctl--select">
+    <label for="sel-drone">Drone</label>
+    <select id="sel-drone"></select>
+  </div>
+  <div class="ctl ctl--select">
+    <label for="sel-pattern">Pattern</label>
+    <select id="sel-pattern"></select>
+  </div>
+  <div class="ctl ctl--range">
+    <label for="rng-speed">Speed <output id="out-speed"></output></label>
+    <input type="range" id="rng-speed" min="0" max="40" step="0.5">
+  </div>
+  <div class="ctl ctl--range">
+    <label for="rng-height">Height AGL <output id="out-height"></output></label>
+    <input type="range" id="rng-height" min="0" max="1000" step="1">
+    <div class="chips" id="height-chips" role="group" aria-label="Height presets"></div>
+  </div>
+  <div class="ctl ctl--range" id="ctl-size">
+    <label for="rng-size"><span id="lbl-size">Size</span> <output id="out-size"></output></label>
+    <input type="range" id="rng-size" min="50" max="3000" step="10">
+  </div>
+  <div class="transport" role="group" aria-label="Simulation">
+    <button type="button" class="btn btn--icon" id="btn-play" title="Play / pause (Space)" aria-label="Play or pause"></button>
+    <select id="sel-warp" title="Time warp ( , and . )" aria-label="Time warp"></select>
+    <button type="button" class="btn btn--icon" id="btn-restart" title="Restart flight, clear track (R)" aria-label="Restart">↺</button>
+  </div>
+  <div class="topbar__end">
+    <button type="button" class="btn" id="btn-settings" aria-expanded="false" aria-controls="settings" title="Display &amp; model settings (S)">Settings</button>
+    <button type="button" class="btn btn--icon" id="btn-help" title="Help &amp; models (?)" aria-label="Help">?</button>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="viewport" id="viewport" aria-label="3-D view">
+    <canvas id="gl" tabindex="0" aria-label="3-D scene: drag to orbit, right-drag to pan, wheel to zoom"></canvas>
+    <div class="labels" id="labels" aria-hidden="true"></div>
+    <div class="hud hud--tl" id="hud"></div>
+    <div class="hud hud--tr">
+      <div class="seg" role="group" aria-label="Camera" id="cam-modes"></div>
+      <div class="seg" role="group" aria-label="Place" id="place-modes"></div>
+    </div>
+    <div class="hud hud--bl">
+      <canvas id="minimap" width="200" height="200" aria-label="Map overview: click to look there"></canvas>
+    </div>
+    <div class="hud hud--br legend" id="legend"></div>
+    <div class="toast" id="toast" hidden></div>
+    <div class="fatal" id="fatal" hidden></div>
+  </section>
+
+  <aside class="panel" aria-label="Link analysis">
+    <section class="card card--link">
+      <div class="card__head">
+        <h2>Link</h2>
+        <select id="sel-primary" aria-label="Technology shown in detail"></select>
+      </div>
+      <div class="hero">
+        <div class="hero__value"><span id="hero-snr">–</span><small>dB SINR</small></div>
+        <div class="hero__side">
+          <div class="state" id="link-state"></div>
+          <div class="verdict" id="link-verdict"></div>
+        </div>
+      </div>
+      <dl class="facts" id="facts"></dl>
+    </section>
+
+    <section class="card">
+      <div class="card__head">
+        <h2>Influences</h2>
+        <span class="card__hint">dB vs. free space, now</span>
+      </div>
+      <div class="budget" id="budget"></div>
+      <div class="infl" id="influences"></div>
+      <div class="comp">
+        <div class="comp__title">Received power is made of</div>
+        <div class="comp__bar" id="comp-bar"></div>
+        <div class="comp__legend" id="comp-legend"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card__head">
+        <h2>Distribution · last 5 s</h2>
+        <div class="seg seg--small" role="group" aria-label="Distribution view" id="dist-mode">
+          <button type="button" data-mode="pdf" aria-pressed="true">PDF</button>
+          <button type="button" data-mode="cdf" aria-pressed="false">CDF</button>
+        </div>
+      </div>
+      <div class="chart-legend" id="dist-legend"></div>
+      <div class="chart"><canvas id="chart-dist" height="190"></canvas><div class="tip" id="tip-dist" hidden></div></div>
+      <p class="note" id="dist-note"></p>
+    </section>
+
+    <section class="card">
+      <div class="card__head">
+        <h2>SINR · last 30 s</h2>
+      </div>
+      <div class="chart-legend" id="hist-legend"></div>
+      <div class="chart"><canvas id="chart-hist" height="150"></canvas><div class="tip" id="tip-hist" hidden></div></div>
+    </section>
+
+    <section class="card">
+      <div class="card__head">
+        <h2>Antennas</h2>
+        <span class="card__hint">elevation cut towards the drone</span>
+      </div>
+      <div class="ant-sel">
+        <label>Ground <select id="sel-gsant"></select></label>
+        <label>Drone <select id="sel-airant"></select></label>
+      </div>
+      <div class="chart-legend" id="polar-legend"></div>
+      <div class="chart chart--polar"><canvas id="chart-polar" height="220"></canvas></div>
+    </section>
+
+    <section class="card">
+      <div class="card__head">
+        <h2>Reference models</h2>
+        <span class="card__hint">same geometry, statistical</span>
+      </div>
+      <table class="refs" id="refs"></table>
+    </section>
+  </aside>
+
+  <section class="techs" aria-label="Technology judgement">
+    <div class="techs__head">
+      <h2>How would each technology do? <span class="card__hint">5 s window · click a row for details</span></h2>
+      <div class="seg seg--small" role="group" aria-label="Regulatory region" id="region">
+        <button type="button" data-region="eu" aria-pressed="true">EU</button>
+        <button type="button" data-region="us" aria-pressed="false">US</button>
+      </div>
+    </div>
+    <div class="techs__scroll">
+      <table class="tech-table" id="tech-table">
+        <thead>
+          <tr>
+            <th scope="col">Technology</th>
+            <th scope="col">Band · BW</th>
+            <th scope="col">Path</th>
+            <th scope="col" class="num">SINR mean</th>
+            <th scope="col" class="num">SINR 10 %</th>
+            <th scope="col" class="num">Doppler</th>
+            <th scope="col" class="num">PER</th>
+            <th scope="col" class="num">Throughput</th>
+            <th scope="col">Verdict</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<aside class="drawer" id="settings" hidden aria-label="Settings">
+  <div class="drawer__head">
+    <h2>Settings</h2>
+    <button type="button" class="btn btn--icon" id="btn-settings-close" aria-label="Close settings">✕</button>
+  </div>
+  <div class="drawer__body" id="settings-body"></div>
+</aside>
+
+<div class="overlay" id="help" hidden role="dialog" aria-modal="true" aria-labelledby="help-title">
+  <div class="overlay__box">
+    <div class="drawer__head">
+      <h2 id="help-title">GeoRfSim – how it works</h2>
+      <button type="button" class="btn btn--icon" id="btn-help-close" aria-label="Close help">✕</button>
+    </div>
+    <div class="help" id="help-body"></div>
+  </div>
+</div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

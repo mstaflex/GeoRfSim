@@ -1,0 +1,20 @@
+services:
+  georfsim:
+    build: .
+    image: georfsim:latest
+    container_name: georfsim
+    # Bound to localhost only. TLS and internet exposure belong in a reverse
+    # proxy in front of the container, not inside it.
+    ports:
+      - "127.0.0.1:8080:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m
+      - /var/cache/nginx:size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+    pids_limit: 64
+    restart: unless-stopped
