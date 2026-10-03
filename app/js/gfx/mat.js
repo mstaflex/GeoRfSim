@@ -13,6 +13,19 @@ export function perspective(out, fovy, aspect, near, far) {
   return out;
 }
 
+/** Orthographic projection (glOrtho). */
+export function ortho(out, l, r, b, t, n, f) {
+  out.fill(0);
+  out[0] = 2 / (r - l);
+  out[5] = 2 / (t - b);
+  out[10] = -2 / (f - n);
+  out[12] = -(r + l) / (r - l);
+  out[13] = -(t + b) / (t - b);
+  out[14] = -(f + n) / (f - n);
+  out[15] = 1;
+  return out;
+}
+
 export function lookAt(out, eye, center, up) {
   let zx = eye[0] - center[0];
   let zy = eye[1] - center[1];

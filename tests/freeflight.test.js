@@ -100,14 +100,37 @@ test('simulation: free flight takes over in the air and hands back to the patter
   for (let i = 0; i < 200; i++) sim.step(0.05);
   assert.ok(Math.hypot(sim.dr.x - before.x, sim.dr.z - before.z) > 100, 'flew away');
   assert.ok(sim.recentPer(0) >= 0 && sim.recentPer(0) <= 1);
+  const away = { ...sim.dr };
   sim.stopFree();
   assert.equal(sim.free, null);
   assert.ok(sim.freeEndT > sim.freeStartT);
-  sim.step(0.5);
-  const t = sim.track;
-  let breaks = 0;
-  for (let i = 0; i < t.n; i++) breaks += t.brk[i];
-  assert.equal(breaks, 1, 'the jump back onto the pattern is not drawn as flown');
+  assert.ok(Math.hypot(sim.dr.x - away.x, sim.dr.z - away.z) < 1e-6, 'no jump when the pattern takes over');
+  // it flies back to the pattern instead: never faster than its speed plus the glide over
+  let step = 0;
+  for (let i = 0; i < 1200 && sim.rejoin; i++) {
+    const a = { ...sim.dr };
+    sim.step(0.05);
+    step = Math.max(step, Math.hypot(sim.dr.x - a.x, sim.dr.z - a.z) / 0.05);
+  }
+  assert.equal(sim.rejoin, null, 'back on the pattern');
+  assert.ok(step < sim.flySpeed * 1.9, `moved at most ${step.toFixed(1)} m/s`);
+});
+
+test('changing speed, size or the height reference in flight never makes the drone jump', () => {
+  const v = world('valley');
+  for (const change of [{ speed: 28 }, { speed: 6 }, { size: 1200 }, { altRef: 'baro' }]) {
+    const sim = new Simulation(v, { ...SCENARIO_BY_ID.valley.defaults });
+    for (let i = 0; i < 1200; i++) sim.step(0.05);
+    const a = { ...sim.dr };
+    sim.configure(change);
+    assert.ok(Math.hypot(sim.dr.x - a.x, sim.dr.z - a.z) < 1e-6, `${JSON.stringify(change)}: same place right after the change`);
+    for (let i = 0; i < 400; i++) {
+      const b = { ...sim.dr };
+      sim.step(0.05);
+      const step = Math.hypot(sim.dr.x - b.x, sim.dr.z - b.z);
+      assert.ok(step < 0.05 * 2 * Math.max(sim.flySpeed, 20), `${JSON.stringify(change)}: smooth (${step.toFixed(2)} m per step)`);
+    }
+  }
 });
 
 test('return to home climbs over the city and lands next to the pilot', () => {

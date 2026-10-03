@@ -38,7 +38,16 @@ const MARGIN_BUCKETS = [
   [-Infinity, COL.critical, '< −6 dB'],
 ];
 const ANT_ID = new Map(Object.entries(ANTENNAS).map(([k, v]) => [v, k]));
-const CAMS = [['orbit', 'Orbit'], ['follow', 'Follow'], ['chase', 'Chase'], ['top', 'Top'], ['pilot', 'Pilot view'], ['fpv', 'FPV']];
+const CAMS = [
+  ['orbit', 'Orbit', 'Orbit around a point: drag turns, right-drag or Shift pans, wheel zooms'],
+  ['follow', 'Follow', 'Orbit that follows the drone (F)'],
+  ['chase', 'Chase', 'Behind the drone'],
+  ['top', 'Top', 'Map from straight above, orthographic (T): drag pans'],
+  ['iso', 'Iso', 'Isometric, orthographic (I): follows the drone; drag pans, right-drag turns to another corner'],
+  ['side', 'Side', 'Side view, orthographic (V): a vertical section across the link to the drone, framed automatically; drag pans, right-drag turns'],
+  ['pilot', 'Pilot view', 'From the pilot to the drone (P)'],
+  ['fpv', 'FPV', 'Camera on the drone'],
+];
 const PLACES = [['center', 'Pattern centre'], ['pilot', 'Pilot'], ['cell', 'Cell site']];
 
 const store = {
@@ -237,13 +246,7 @@ const polarChart = new PolarChart($('chart-polar'));
 const minimap = new Minimap($('minimap'), (x, z) => {
   if (state.place) placeAt(x, z);
   else if (flightEditor.mapEdit) flightEditor.addAt(x, z);
-  else {
-    const w = sim.world;
-    cam.mode = 'orbit';
-    state.camMode = 'orbit';
-    cam.target = renderer.display(x, z, w.elevAt(x, z), 0);
-    syncCamButtons();
-  }
+  else lookAtGround(x, z);
   dirty = true;
 });
 let dirty = true;
@@ -263,11 +266,16 @@ function primaryIdx() {
   return Math.max(0, TECHS.findIndex((t) => t.id === state.primary));
 }
 
+/** The side view is a section drawing: always linear, so a level flight stays level and the direct ray straight. */
+function effectiveScale() {
+  return state.camMode === 'side' && state.view.scale === 'log' ? 'lin' : state.view.scale;
+}
+
 function applyMapping() {
   const v = state.view;
   const scn = SCENARIO_BY_ID[state.scenario];
   renderer.setMapping({
-    mode: v.scale, h0: v.h0 ?? scn.view.h0, gain: v.gain ?? scn.view.gain, terrK: v.terrK ?? scn.terrainExag, treeScale: v.treeScale,
+    mode: effectiveScale(), h0: v.h0 ?? scn.view.h0, gain: v.gain ?? scn.view.gain, terrK: v.terrK ?? scn.terrainExag, treeScale: v.treeScale,
   });
   renderer.layers = { ...v.layers };
   renderer.maxDpr = v.dpr;
@@ -553,9 +561,10 @@ function syncControls() {
 
 // camera & place buttons
 const camBox = $('cam-modes');
-for (const [mode, label] of CAMS) {
+for (const [mode, label, title] of CAMS) {
   const b = el('button', '', label);
   b.type = 'button';
+  b.title = title;
   b.dataset.mode = mode;
   b.addEventListener('click', () => setCam(mode));
   camBox.append(b);
@@ -574,10 +583,22 @@ for (const [what, label] of PLACES) {
   placeBox.append(b);
 }
 function setCam(mode) {
+  const scale = effectiveScale();
   state.camMode = mode;
-  cam.mode = mode;
-  if (mode === 'chase') cam.chaseEye = null;
+  cam.setMode(mode);
   if (mode === 'chase' && cam.dist > sim.world.S * 0.2) cam.dist = sim.world.S * 0.06;
+  if (effectiveScale() !== scale) {
+    applyMapping();
+    syncSettings();
+  }
+  syncCamButtons();
+  dirty = true;
+}
+
+/** Re-centres the view on a ground point; perspective views switch to orbit, the drawing views stay. */
+function lookAtGround(x, z) {
+  cam.lookAtPoint(renderer.display(x, z, sim.world.elevAt(x, z), 0));
+  state.camMode = cam.mode;
   syncCamButtons();
   dirty = true;
 }
@@ -631,12 +652,7 @@ new CameraControls(canvas, cam, {
   onDoubleClick: (x, y) => {
     if (flightEditor.mapEdit) return;
     const p = renderer.pick(x, y);
-    if (!p) return;
-    cam.mode = 'orbit';
-    state.camMode = 'orbit';
-    cam.target = renderer.display(p.x, p.z, sim.world.elevAt(p.x, p.z), 0);
-    syncCamButtons();
-    dirty = true;
+    if (p) lookAtGround(p.x, p.z);
   },
   onClick: (x, y) => {
     if (state.place) {
@@ -674,10 +690,11 @@ for (const b of $('dist-mode').querySelectorAll('button')) {
 
 const SETTINGS = [
   { group: 'Height scale' },
-  { key: 'view.scale', type: 'select', label: 'Vertical scale', options: [['log', 'Logarithmic'], ['lin', 'Linear, exaggerated'], ['true', 'True scale 1:1']] },
-  { key: 'view.h0', type: 'range', label: 'Log knee h₀', min: 2, max: 40, step: 1, fmt: (v) => `${v} m`, dflt: () => SCENARIO_BY_ID[state.scenario].view.h0 },
-  { key: 'view.gain', type: 'range', label: 'Height exaggeration', min: 0.4, max: 3, step: 0.1, fmt: (v) => `${v.toFixed(1)}×`, dflt: () => SCENARIO_BY_ID[state.scenario].view.gain },
-  { key: 'view.terrK', type: 'range', label: 'Terrain relief', min: 1, max: 4, step: 0.1, fmt: (v) => `${v.toFixed(1)}×`, dflt: () => SCENARIO_BY_ID[state.scenario].terrainExag },
+  { key: 'view.scale', type: 'select', label: 'Vertical scale', options: [['log', 'Logarithmic near the ground'], ['lin', 'Linear, exaggerated'], ['true', 'True scale 1:1']] },
+  { note: 'The side view draws heights linearly.', shown: () => effectiveScale() !== state.view.scale },
+  { key: 'view.h0', type: 'range', label: 'Log knee h₀', min: 2, max: 40, step: 1, fmt: (v) => `${v} m`, dflt: () => SCENARIO_BY_ID[state.scenario].view.h0, enabled: () => effectiveScale() === 'log' },
+  { key: 'view.gain', type: 'range', label: 'Height exaggeration', min: 0.4, max: 3, step: 0.1, fmt: (v) => `${v.toFixed(1)}×`, dflt: () => SCENARIO_BY_ID[state.scenario].view.gain, enabled: () => effectiveScale() === 'log' },
+  { key: 'view.terrK', type: 'range', label: 'Terrain relief', min: 1, max: 4, step: 0.1, fmt: (v) => `${v.toFixed(1)}×`, dflt: () => SCENARIO_BY_ID[state.scenario].terrainExag, enabled: () => state.view.scale !== 'true' },
   { key: 'view.treeScale', type: 'range', label: 'Tree size', min: 0.4, max: 2, step: 0.1, fmt: (v) => `${v.toFixed(1)}×` },
   { group: 'Show' },
   { key: 'view.trackColor', type: 'select', label: 'Colour track by', options: [['margin', 'Link margin'], ['state', 'Path state (LOS/NLOS)'], ['height', 'Height']] },
@@ -720,6 +737,11 @@ function buildSettings() {
   for (const s of SETTINGS) {
     if (s.group) {
       body.append(el('div', 'set-group', s.group));
+      continue;
+    }
+    if (s.note) {
+      s.el = el('div', 'set-note', s.note);
+      body.append(s.el);
       continue;
     }
     const row = el('div', s.type === 'check' ? 'set-row set-row--check' : 'set-row');
@@ -782,12 +804,17 @@ function syncModelBadge() {
 }
 
 function syncSettings() {
+  for (const s of SETTINGS) if (s.note) s.el.hidden = !s.shown();
   for (const { s, input } of settingInputs) {
     let v = getPath(s.key);
     if ((v === null || v === undefined) && s.dflt) v = s.dflt();
     if (s.type === 'check') input.checked = !!v;
     else input.value = String(v);
     if (s.out) s.out.textContent = s.fmt ? s.fmt(+v) : String(v);
+    if (s.enabled) {
+      input.disabled = !s.enabled();
+      input.closest('.set-row').classList.toggle('is-off', input.disabled);
+    }
   }
   if (modelPanel) modelPanel.sync();
 }
@@ -841,12 +868,13 @@ function buildHelp() {
   b.append(
     p('GeoRfSim flies a drone over a procedurally generated landscape and evaluates every radio link with established, abstracted models instead of ray tracing: geometry decides line of sight, models decide how much each mechanism costs, and a Rician/Rayleigh fading process turns it into a received-signal distribution.'),
     h('Height scale'),
-    p('Heights above ground are drawn logarithmically: y = H·log10(1 + h/h₀). Trees, houses and a pilot at 1.5 m stay visible next to a drone at 400 m. Terrain relief itself is linear. The mapping is monotonic per ground point, so "above / below the canopy" is always shown correctly - the direct ray is therefore drawn as a curve. Settings → Height scale switches to linear or true scale.'),
+    p('Heights above ground are drawn logarithmically near the ground: y = H·log10(1 + h/h₀), so trees, houses and a pilot at 1.5 m stay visible next to a drone at 400 m. Above a knee (about 30–100 m, where the log curve has become as flat as the terrain exaggeration) heights continue linearly with the terrain\'s exaggeration: a constant (barometric) altitude is drawn level over hills, and a climb looks like a climb. The mapping is monotonic per ground point, so "above / below the canopy" is always shown correctly - the direct ray is therefore drawn as a curve. Settings → Height scale switches to linear or true scale; the Side view (V) always draws linearly, so the direct ray is straight there.'),
   );
   const keys = [
     ['Space', 'play / pause'], ['R', 'restart the flight (clears the track)'], ['1 … 6', 'scenarios'],
     ['[  ]', 'height down / up'], ['−  =', 'speed down / up'], [',  .', 'time warp slower / faster'],
-    ['↑  ↓', 'previous / next technology'], ['C', 'cycle camera: orbit, follow, chase, top, pilot, FPV'], ['F  T  P', 'follow / top / pilot view'],
+    ['↑  ↓', 'previous / next technology'], ['C', 'cycle camera: orbit, follow, chase, top, iso, side, pilot, FPV'], ['F  T  P', 'follow / top / pilot view'],
+    ['I  V', 'isometric view / side view (orthographic; drag pans, right-drag turns)'],
     ['L', 'log ↔ linear height scale'], ['B', 'height reference: AGL (follow the terrain) ↔ barometric (hold altitude)'],
     ['S', 'settings & model parameters'], ['?', 'this help'], ['Esc', 'close / cancel'],
     ['Mouse', 'drag: orbit · right-drag or Shift: pan · wheel: zoom · double-click: look there'],
@@ -892,7 +920,7 @@ function buildHelp() {
   b.append(
     h('Flight profiles, drones & free flight'),
     p('Flight profiles (✎ next to the pattern) are waypoint plans: each waypoint has a height above ground, the speed of the leg that starts there and an optional hold. At the end the drone loops, flies back and forth or stops. Switch on "Edit on map" (E), then click on the ground to add waypoints, drag them, right-click to delete; Top view (T) is easiest. Corners are flown with the turn radius the airframe needs; fixed wings cannot hold. Profiles are stored in this browser and travel as JSON files or inside a link. A pattern or a free flight can be turned into a profile.'),
-    p('Height reference (AGL / Baro in the top bar, B): with AGL the heights are above the ground below the drone, so it follows the terrain. Barometric heights are altitudes above the take-off point (the pilot), held like a barometer does: the drone keeps its altitude over valleys and only rises where the ground - with "Climb over buildings & tree crowns" also a roof or a canopy - comes closer than the clearance (Settings → Flight), starting the climb early enough for its climb rate. It applies to patterns, flight profiles and free flight; the HUD then shows the altitude and the height above ground.'),
+    p('Height reference (AGL / Baro in the top bar, B): with AGL the heights are above the ground below the drone, so it follows the terrain. Barometric heights are altitudes above the take-off point (the pilot), held like a barometer does: the drone keeps its altitude over valleys and only rises where the ground - with "Climb over buildings & tree crowns" also a roof or a canopy - comes closer than the clearance (Settings → Flight), starting the climb early enough for its climb rate - for a ridge higher than the altitude a slow climber starts up well before it. A constant altitude is drawn level. It applies to patterns, flight profiles and free flight; the HUD then shows the altitude and the height above ground. The Side view (V) shows it best: a section across the link with the ground along it.'),
     p('Drone profiles (✎ next to the drone): duplicate a built-in airframe to edit speeds, climb rate, acceleration, tilt or bank limits, size and the on-board antenna. The editor shows what follows: turn radius, stopping distance, maximum Doppler shift.'),
     p('Free flight (G) hands you the sticks: keyboard in Mode-2 layout, a game pad, or an RC transmitter connected by USB as a joystick (AETR or TAER channel order). Multirotors fly like a GPS drone in position mode; fixed wings fly coordinated turns and cannot stall. Ground and buildings are solid. Return home (H) climbs over obstacles, flies back and lands next to the pilot. With "failsafe RTH" on, the drone stops hearing your sticks and returns home when the chosen control link loses more than 90 % of its packets for a second - the simulated link, not a timer. The FPV camera rides on the airframe.'),
   );
@@ -949,12 +977,15 @@ window.addEventListener('keydown', (e) => {
   } else if (k === 'c' || k === 'C') setCam(CAMS[(CAMS.findIndex((m) => m[0] === cam.mode) + 1) % CAMS.length][0]);
   else if (k === 'f' || k === 'F') setCam('follow');
   else if (k === 't' || k === 'T') setCam('top');
+  else if (k === 'i' || k === 'I') setCam('iso');
+  else if (k === 'v' || k === 'V') setCam('side');
   else if (k === 'p' || k === 'P') setCam('pilot');
   else if (k === 'l' || k === 'L') {
     state.view.scale = state.view.scale === 'log' ? 'lin' : 'log';
     applyMapping();
     saveView();
-    toast(`Height scale: ${state.view.scale === 'log' ? 'logarithmic' : 'linear'}`);
+    syncSettings();
+    toast(`Height scale: ${state.view.scale === 'log' ? 'logarithmic' : 'linear'}${state.camMode === 'side' ? ' (the side view stays linear)' : ''}`);
   } else if (k === 's' || k === 'S') toggleDrawer();
   else if (k === '?' || k === 'h' || k === 'H') toggleHelp();
   else if (k === 'Escape') {
@@ -1002,7 +1033,58 @@ function colorOf(i) {
   return cachedHex(marginColor(t.margin[i * t.nTech + primaryIdx()]));
 }
 
-function updateRays() {
+/** The parts of the 3-D view covered by overlays, as fractions of its height: the side view keeps its section clear of them. */
+const hudCover = { top: 0, bottom: 0 };
+{
+  const vp = $('viewport');
+  const huds = [...vp.querySelectorAll(':scope > .hud')];
+  const measure = () => {
+    const v = vp.getBoundingClientRect();
+    hudCover.top = hudCover.bottom = 0;
+    if (!v.height) return;
+    for (const e of huds) {
+      const r = e.getBoundingClientRect();
+      if (!r.height) continue;
+      if (r.top + r.bottom < v.top + v.bottom) hudCover.top = Math.max(hudCover.top, (r.bottom - v.top) / v.height);
+      else hudCover.bottom = Math.max(hudCover.bottom, (v.bottom - r.top) / v.height);
+    }
+  };
+  const ro = new ResizeObserver(measure);
+  for (const e of [vp, ...huds]) ro.observe(e);
+}
+
+/**
+ * The selected link for the side view: both ends in display space, the
+ * ground along it (drawn as the section line), its height range and the
+ * overlays to keep clear of.
+ */
+function linkGeometry() {
+  const g = sim.geo[TECHS[primaryIdx()].node];
+  const n = g.node;
+  const d = sim.dr;
+  if (!n || !d) return null;
+  const w = sim.world;
+  const a = renderer.display(n.x, n.z, n.e, n.h);
+  const b = renderer.display(d.x, d.z, d.e, d.agl);
+  let lo = Math.min(a[1], b[1]);
+  let hi = Math.max(a[1], b[1]);
+  const ground = [];
+  for (let i = 0; i <= 64; i++) {
+    const t = i / 64;
+    const x = n.x + (d.x - n.x) * t;
+    const z = n.z + (d.z - n.z) * t;
+    const e = w.elevAt(x, z);
+    const y = renderer.display(x, z, e, 0)[1];
+    lo = Math.min(lo, y);
+    hi = Math.max(hi, y);
+    ground.push([x, z, e]);
+  }
+  return { a, b, lo, hi, ground, ...hudCover };
+}
+
+const SECTION = [0.98, 0.86, 0.55, 0.95];
+
+function updateRays(link = null) {
   const lay = state.view.layers;
   const tech = TECHS[primaryIdx()];
   const g = sim.geo[tech.node];
@@ -1031,6 +1113,8 @@ function updateRays() {
     }
     lines.push(pts);
   }
+  // side view: the ground along the link, so the section shows the terrain under the ray
+  if (link) lines.push(link.ground.map(([x, z, e]) => [x, z, e, 0.4, SECTION]));
   // the drone's own drop line: reads its 3-D position against the ground (not from the drone's own camera)
   const de = w.elevAt(d.x, d.z);
   const white = [1, 1, 1, 0.85];
@@ -1101,7 +1185,8 @@ const labels = {
 for (const l of Object.values(labels)) labelBox.append(l);
 
 function place(lbl, p, html) {
-  if (!p || !state.view.layers.labels || p[0] < -50 || p[1] < -20 || p[0] > canvas.clientWidth + 50 || p[1] > canvas.clientHeight + 40) {
+  // p[2] < −1: in front of the near plane (e.g. cut away by the side view's section)
+  if (!p || p[2] < -1 || !state.view.layers.labels || p[0] < -50 || p[1] < -20 || p[0] > canvas.clientWidth + 50 || p[1] > canvas.clientHeight + 40) {
     lbl.hidden = true;
     return;
   }
@@ -1530,7 +1615,8 @@ function frame(now) {
   const airframe = DRONE_BY_ID[state.cfg.drone];
   if (state.playing || dirty || cam.mode !== 'orbit') {
     renderer.syncTrack(sim.track, colorOf, colorKey());
-    updateRays();
+    const link = cam.mode === 'side' ? linkGeometry() : null;
+    updateRays(link);
     // waypoint plan and markers while the flight-profile editor is open
     const ov = flightEditor.overlay();
     const plan = ov.plan.length ? ov.plan : NO_LINES;
@@ -1549,6 +1635,7 @@ function frame(now) {
       pilot: pilotEye,
       body: d.body,
       lift: renderer.display(d.x, d.z, d.e, d.agl + 0.3)[1] - dPos[1],
+      link,
     }, dt);
     renderer.render(cam, {
       drone: { ...d, model: airframe.model, span: airframe.span },

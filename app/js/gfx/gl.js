@@ -3,17 +3,20 @@
 /** GLSL shared by every program that maps physical heights to display heights. */
 export const HEIGHT_GLSL = `
 uniform vec4 uMap;      // x: display units per decade, y: h0 (m), z: linear factor, w: 0 = log, 1 = linear
-uniform float uTerrK;   // terrain relief exaggeration
+uniform vec2 uKnee;     // log mode: above x metres heights continue linearly from display height y
+uniform float uTerrK;   // terrain relief exaggeration (also the slope above the knee)
 float mapH(float h) {
   if (uMap.w < 0.5) {
-    float y = uMap.x * log(1.0 + abs(h) / uMap.y) * 0.4342944819;
+    float a = abs(h);
+    float y = a <= uKnee.x ? uMap.x * log(1.0 + a / uMap.y) * 0.4342944819 : uKnee.y + (a - uKnee.x) * uTerrK;
     return h < 0.0 ? -y : y;
   }
   return h * uMap.z;
 }
 float unmapH(float y) {
   if (uMap.w < 0.5) {
-    float h = uMap.y * (pow(10.0, abs(y) / uMap.x) - 1.0);
+    float a = abs(y);
+    float h = a <= uKnee.y ? uMap.y * (pow(10.0, a / uMap.x) - 1.0) : uKnee.x + (a - uKnee.y) / uTerrK;
     return y < 0.0 ? -h : h;
   }
   return y / uMap.z;

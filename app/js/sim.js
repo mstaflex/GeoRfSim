@@ -190,20 +190,58 @@ export class Simulation {
     return clamp(this.cfg.speed, d.vMin || 0, d.vMax);
   }
 
+  /**
+   * New path for the current settings. A drone already in the air continues
+   * from the closest point of the new path that runs its way and glides over
+   * to it at about its flight speed, so changing speed, size, heading, height
+   * reference or a flight profile never makes it jump.
+   */
   rebuild() {
     const d = this.drone;
+    const was = this.free ? null : this.dr;
     const v = Math.max(this.flySpeed, canHover(d) ? 0.5 : d.vMin);
     this.path = buildPath(this.world, d, { ...this.cfg, speed: v });
-    if (this.path.len > 0) this.s = this.path.open ? clamp(this.s || 0, 0, this.path.len) : ((this.s || 0) % this.path.len + this.path.len) % this.path.len;
-    else this.s = 0;
-    const holds = this.path.holds || [];
+    const path = this.path;
+    if (!(path.len > 0)) this.s = 0;
+    else if (was && !path.vertical) this.s = this.#nearestS(was);
+    else this.s = path.open ? clamp(this.s || 0, 0, path.len) : ((this.s || 0) % path.len + path.len) % path.len;
+    const holds = path.holds || [];
     this.holdIdx = holds.findIndex((hd) => hd.s > this.s + 1e-6);
     if (this.holdIdx < 0) this.holdIdx = holds.length;
     this.holdLeft = 0;
+    this.rejoin = null;
+    if (was) {
+      const p = samplePath(path, this.s);
+      const ox = was.x - p.x;
+      const oz = was.z - p.z;
+      if (Math.hypot(ox, oz) > 0.3) this.rejoin = { x: ox, z: oz };
+    }
     this.#aimAntennas();
     this.dr = null;
     this.#updateDrone(0);
     this.prevDr = { ...this.dr };
+  }
+
+  /** Arc length of the path point closest to `pos`, preferring points where the path runs the way it heads. */
+  #nearestS(pos) {
+    const path = this.path;
+    const n = path.x.length;
+    const hx = Math.cos(pos.heading || 0);
+    const hz = Math.sin(pos.heading || 0);
+    let best = 0;
+    let bd = Infinity;
+    for (let i = 0; i < n; i++) {
+      const j = Math.min(i + 1, n - 1);
+      const k = j === i ? Math.max(i - 1, 0) : i;
+      // a leg running the other way (out-and-back, a crossing of a figure 8) counts as 40 m further away
+      const against = (path.x[j] - path.x[k]) * hx + (path.z[j] - path.z[k]) * hz < 0;
+      const dd = Math.hypot(path.x[i] - pos.x, path.z[i] - pos.z) + (against ? 40 : 0);
+      if (dd < bd) {
+        bd = dd;
+        best = i;
+      }
+    }
+    return Math.min(best * path.ds, path.len);
   }
 
   #aimAntennas() {
@@ -246,9 +284,9 @@ export class Simulation {
     this.holdWp = -1;
     this.free = null;
     this.rth = null;
+    this.rejoin = null;
     this.input = { ...NO_INPUT };
     this.events = [];
-    this.breakNext = false;
     this.freeStartT = -1;
     this.freeEndT = Infinity;
     this.dr = null;
@@ -294,9 +332,7 @@ export class Simulation {
         margins,
         this.geo.pilot.state ?? 0,
         this.geo.cell.state ?? 0,
-        this.breakNext ? 1 : 0,
       );
-      this.breakNext = false;
       this.distSinceTrack = 0;
       this.timeSinceTrack = 0;
     }
@@ -364,7 +400,7 @@ export class Simulation {
     this.freeEndT = Infinity;
   }
 
-  /** Back to the selected pattern, resuming at the path point closest to the drone. */
+  /** Back to the selected pattern: the drone flies over to the closest point of it and carries on. */
   stopFree() {
     if (!this.free) return;
     const d = this.dr;
@@ -373,20 +409,8 @@ export class Simulation {
     this.freeEndT = this.t;
     this.aglCur = d.agl;
     this.yCur = d.y;
-    const path = this.path;
-    let best = 0;
-    let bd = Infinity;
-    for (let i = 0; i < path.x.length; i++) {
-      const dd = Math.hypot(path.x[i] - d.x, path.z[i] - d.z);
-      if (dd < bd) {
-        bd = dd;
-        best = i;
-      }
-    }
-    this.s = path.len > 0 ? best * path.ds : 0;
     this.vCur = undefined;
     this.rebuild();
-    this.breakNext = bd > 15;
   }
 
   /** Return-to-home on/off (free flight only). Home is a free spot 6 m from the pilot, on the drone's side. */
@@ -432,13 +456,27 @@ export class Simulation {
     let x = p.x;
     let z = p.z;
     let agl = p.agl;
+    // gliding over to a changed path: the offset from it shrinks at about the flight speed
+    if (this.rejoin) {
+      const r = this.rejoin;
+      if (h > 0) {
+        const len = Math.hypot(r.x, r.z);
+        const k = Math.max(0, len - Math.max(this.flySpeed, 3) * 0.8 * h) / len;
+        r.x *= k;
+        r.z *= k;
+        if (len * k < 0.05) this.rejoin = null;
+      }
+      x += r.x;
+      z += r.z;
+    }
     // climb/descend towards a new height setpoint at the airframe's climb rate - in heights above
     // ground when following the terrain, in altitude when holding a barometric altitude
     const e0 = this.world.elevAt(x, z);
     const up = d.climb * 1.2 * h;
     if (this.cfg.altRef === 'baro') {
-      if (this.yCur === undefined) this.yCur = e0 + agl;
-      else if (h > 0) this.yCur += clamp(e0 + agl - this.yCur, -1.5 * up, up);
+      const yT = this.world.elevAt(p.x, p.z) + agl; // the altitude the path asks for
+      if (this.yCur === undefined) this.yCur = yT;
+      else if (h > 0) this.yCur += clamp(yT - this.yCur, -1.5 * up, up);
       this.yCur = Math.max(this.yCur, e0 + 0.3);
       this.aglCur = this.yCur - e0;
     } else {

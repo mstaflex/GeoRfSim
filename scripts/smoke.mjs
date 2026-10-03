@@ -90,6 +90,15 @@ await step('scenario, barometric height and settings', async () => {
   await until(() => !document.getElementById('settings').hidden);
   await page.keyboard.press('Escape');
 });
+await step('top, isometric and side views', async () => {
+  await page.focus('#gl');
+  for (const [key, mode] of [['t', 'top'], ['i', 'iso'], ['v', 'side']]) {
+    await page.keyboard.press(key);
+    await until((m) => window.georfsim.cam.mode === m && window.georfsim.cam.isOrtho, mode);
+    await page.waitForTimeout(400);
+  }
+  await page.keyboard.press('f');
+});
 await step('flight-profile editor', async () => {
   await page.click('#btn-edit-flight');
   await until(() => !document.getElementById('flight-editor').hidden);

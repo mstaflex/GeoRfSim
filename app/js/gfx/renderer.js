@@ -8,6 +8,7 @@
  */
 import { program, buffer, attribs, HEIGHT_GLSL } from './gl.js';
 import { mat4, fromBasis, transformPoint } from './mat.js';
+import { heightMapping, mapHeight } from './heightmap.js';
 import { unitCube, unitTrunk, unitCrown, airframe, pilotMesh, towerMesh, lobeMesh } from './meshes.js';
 
 const LIGHT_GLSL = `
@@ -396,7 +397,7 @@ export class Renderer {
     this.lobeCache = new Map();
     this.droneMeshes = new Map();
     this.trackState = { version: -1, n: 0, colorKey: '' };
-    this.mapParams = { mode: 0, H: 400, h0: 15, k: 1, terrK: 1.5, treeScale: 1 };
+    this.mapParams = { mode: 0, H: 400, h0: 15, k: 1, terrK: 1.5, knee: [100, 300], treeScale: 1 };
     this.layers = { trees: true, buildings: true, track: true, drops: true, los: true, refl: true, lobes: true, grid: true, xray: true };
     this.sun = norm3([0.45, 0.8, 0.35]);
     this.model = mat4();
@@ -544,26 +545,14 @@ export class Renderer {
    * mode: 'log' | 'lin' | 'true'; h0: log knee (m); gain: vertical exaggeration
    * of the mapped heights; terrK: terrain relief factor; treeScale.
    */
+  /** Height mapping: see heightmap.js ('log' near the ground and linear above the knee, 'lin', 'true'). */
   setMapping({ mode = 'log', h0 = 15, gain = 1, terrK = 1.5, treeScale = 1 }) {
-    const S = this.world ? this.world.S : 2000;
-    const H = gain * S * 0.1;
-    const m = this.mapParams;
-    m.H = H;
-    m.h0 = h0;
-    m.mode = mode === 'log' ? 0 : 1;
-    m.k = mode === 'true' ? 1 : (H * Math.log10(1 + 500 / h0)) / 500;
-    m.terrK = terrK;
-    m.treeScale = treeScale;
-    m.key = `${mode}|${h0}|${gain}|${terrK}`;
+    const m = heightMapping({ mode, h0, gain, terrK, S: this.world ? this.world.S : 2000 });
+    Object.assign(this.mapParams, m, { treeScale, key: `${mode}|${h0}|${gain}|${m.terrK}` });
   }
 
   mapH(h) {
-    const m = this.mapParams;
-    if (m.mode === 0) {
-      const y = m.H * Math.log10(1 + Math.abs(h) / m.h0);
-      return h < 0 ? -y : y;
-    }
-    return h * m.k;
+    return mapHeight(this.mapParams, h);
   }
 
   /** Display position of a point given terrain elevation e and height above ground. */
@@ -575,6 +564,7 @@ export class Renderer {
     const gl = this.gl;
     const m = this.mapParams;
     gl.uniform4f(p.u.uMap, m.H, m.h0, m.k, m.mode);
+    gl.uniform2f(p.u.uKnee, m.knee[0], m.knee[1]);
     gl.uniform1f(p.u.uTerrK, m.terrK);
   }
 

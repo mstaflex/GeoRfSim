@@ -106,7 +106,8 @@ Everything applies immediately. There are no "apply" buttons.
 | Model parameters | *Model…* in the Influences card, or the end of Settings: canopy density, scattering per environment, diffraction, ground reflection, noise. See below |
 | Play, pause, time warp | `Space`, `,` / `.` (×0.25 … ×20), `R` restarts and clears the track |
 | Camera | drag: orbit · right-drag or Shift: pan · wheel: zoom · double-click: look there |
-| Camera modes | Orbit, Follow, Chase, Top, Pilot view, FPV (`C` cycles, `F` `T` `P`) |
+| Camera modes | Orbit, Follow, Chase, Top, Iso, Side, Pilot view, FPV (`C` cycles, `F` `T` `I` `V` `P`). Top, Iso and Side are orthographic drawing views: drag pans, right-drag turns Iso (it settles on a corner) and Side, wheel zooms |
+| Side view | a vertical section across the selected link: the node on the left, the drone on the right, the ground along the link as a line, everything in front of the section cut away. Heights are drawn linearly here, so the direct ray is a straight line and a constant altitude is level. It frames itself as the drone moves until you pan or turn it |
 | Flight profiles | ✎ next to *Pattern*: waypoint plans drawn on the map (`E` toggles map editing). See below |
 | Drone profiles | ✎ next to *Drone*: your own airframes, based on a built-in one |
 | Free flight | *Free flight* button or `G`: fly with keyboard, game pad, RC transmitter or the on-screen sticks |
@@ -226,13 +227,18 @@ plus both sticks.
   a long distance triggers it, not a timer.
 * The **FPV** camera rides on the airframe, tilted up 15°. The horizon rolls and
   pitches with the drone.
-* Leaving free flight (`G`) resumes the selected pattern at the point closest
-  to the drone. The jump is left out of the drawn track. *Save as flight
-  profile* keeps the flight.
+* Leaving free flight (`G`) hands back to the selected pattern: the drone flies
+  over to the closest point of it and carries on. *Save as flight profile*
+  keeps the flight.
+
+Changing the speed, size, heading, height reference or a flight profile in
+flight never makes the drone jump either. It continues from the closest point
+of the new path that runs its way and glides over to it at about its flight
+speed.
 
 ## Height reference: AGL or barometric
 
-![Barometric altitude: level at 60 m above take-off, up over the forested ridge only where the ground comes within the clearance, and back down behind it - where the ELRS link is lost](docs/barometric.jpg)
+![Side view of a barometric flight at 150 m above take-off: level over the valley, climbing in time for its climb rate where the forested ridge rises above that altitude, over the crowns at the set clearance and back down behind it. The direct ray, straight in the side view, is cut by the ridge and the ELRS link is lost](docs/barometric.jpg)
 
 The switch next to the height slider (`B`) decides what the height means. It
 applies to patterns, flight profiles and free flight alike.
@@ -247,8 +253,13 @@ applies to patterns, flight profiles and free flight alike.
   than the *minimum ground clearance* (Settings → Flight, default 10 m), or
   closer than the commanded height if that is lower. The climb starts early
   enough for the airframe's climb rate, and afterwards the drone sinks back to
-  its altitude.
+  its altitude. So when a ridge ahead is higher than the altitude minus the
+  clearance, a slow climber starts up while still well above the ground right
+  below it: a VTOL climbing 4 m/s at 20 m/s needs about 1 km of run-up for
+  200 m. With the ridge more than the clearance below the altitude, the drone
+  stays level.
 
+A constant altitude is also drawn level, also over hills (see *Height scale*).
 In barometric mode the HUD shows both, e.g. `81 m alt · 48 m AGL`. Flight
 profile heights become altitudes too: the editor's column reads *Alt.*, markers
 sit at the altitude, and it warns about waypoints closer to the ground than the
@@ -294,15 +305,23 @@ The tab of the class that the selected link sees right now is pre-selected.
 
 ## Height scale
 
-Heights above ground are drawn logarithmically: `y = H · log10(1 + h / h₀)`.
-A pilot at 1.5 m, a 20 m canopy, a street canyon and a drone at 400 m all stay
-readable on a map several kilometres wide. Terrain relief is linear (with an
-adjustable exaggeration). The mapping is monotonic for every ground point, so
+Heights above ground are drawn logarithmically near the ground:
+`y = H · log10(1 + h / h₀)`. A pilot at 1.5 m, a 20 m canopy, a street canyon
+and a drone at 400 m all stay readable on a map several kilometres wide.
+Terrain relief is linear (with an adjustable exaggeration). Above a knee - where
+the log curve has become as flat as the terrain's exaggeration, 30–100 m
+depending on the scenario - heights continue linearly with that same
+exaggeration. A drone holding a constant (barometric) altitude is therefore
+drawn level over hills and valleys, and a real climb looks like a climb. A pure
+log scale would make a level flight seem to follow the terrain. The mapping is
+monotonic for every ground point, so
 "above / below the canopy" is always drawn correctly. That is also why the
 straight direct ray appears as a curve. Tree crowns are widened with the
 vertical scale and forest instances are thinned accordingly, so trees appear
-larger than life instead of as needles. Settings switches to linear or true
-scale.
+larger than life instead of as needles. Settings switches to linear (one
+exaggeration for terrain and heights) or true scale (1:1, also the terrain).
+The Side view always draws linearly: a section drawing, in which the direct
+ray is straight and its clearance above the ground can be read off.
 
 ## Scenarios
 
