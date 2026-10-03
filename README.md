@@ -457,3 +457,7 @@ On GitHub Pages the policy comes from the `<meta>` tag. Pages cannot send
 headers, so there is no `frame-ancestors` / `X-Frame-Options` there (other
 sites could embed the page; it has no accounts or actions to abuse) and no
 `Permissions-Policy`. Pages serves HTTPS, so clipboard links and game pads work.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
