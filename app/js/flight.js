@@ -2,7 +2,9 @@
  * Drone profiles, flight patterns and kinematics. A pattern becomes a closed
  * path resampled every PATH_DS metres with a desired height above ground; an
  * optional obstacle pass lifts the height over buildings and tree crowns
- * (respecting the climb rate). Attitude follows simple flight mechanics:
+ * (respecting the climb rate). With the barometric height reference the
+ * commanded heights are altitudes above the take-off point instead, and the
+ * drone only rises where the ground closes in. Attitude follows simple flight mechanics:
  * multirotors pitch into the wind of their own speed and bank in turns,
  * fixed-wings bank with tan φ = v²κ/g.
  */
@@ -271,7 +273,7 @@ export function buildPath(world, drone, cfg) {
     path.len = (top - 2) * 2;
     path.ds = path.len / n;
   }
-  if (cfg.avoid) liftOverObstacles(world, drone, path, v);
+  applyHeightReference(world, drone, path, cfg, v);
   return path;
 }
 
@@ -295,7 +297,7 @@ function buildProfilePath(world, drone, cfg) {
     path.hover = hover;
     path.vertical = false;
     path.holds = [];
-    if (cfg.avoid) liftOverObstacles(world, drone, path, vEnv(w.v));
+    applyHeightReference(world, drone, path, cfg, vEnv(w.v));
     return path;
   }
   let verts = wps.map((w, i) => ({ ...w, hold: hover ? w.hold || 0 : 0, idx: i }));
@@ -375,7 +377,7 @@ function buildProfilePath(world, drone, cfg) {
   // an open plan ends at its last waypoint: hold there for good
   if (!closed && verts[n - 1].hold > 0) path.holds.push({ s: path.len, t: verts[n - 1].hold, wp: verts[n - 1].idx });
   path.holds.sort((a, b) => a.s - b.s);
-  if (cfg.avoid) liftOverObstacles(world, drone, path, cfg.speed);
+  applyHeightReference(world, drone, path, cfg, cfg.speed);
   return path;
 }
 
@@ -438,15 +440,53 @@ function resample(pts, agl, h, spd = null) {
   return { x, z, agl: a, speed: v, curv: c2, len, ds };
 }
 
-/** Raises the height profile over obstacles, anticipating climbs at the airframe's climb rate. */
-function liftOverObstacles(world, drone, path, v) {
+/**
+ * Height reference of the commanded heights (path.agl on entry):
+ *   'agl'  - above the ground below the drone (terrain following); avoidance
+ *            lifts the path over roofs and tree crowns.
+ *   'baro' - altitudes above the take-off point (the pilot's ground), held like
+ *            a barometric altimeter does. The drone only rises where the ground
+ *            (with avoidance also a roof or tree crown) comes closer than the
+ *            clearance - or than the commanded height, if that is lower - and
+ *            comes back down to its altitude afterwards.
+ * Either way climbs start early enough for the airframe's climb rate.
+ * On return path.agl holds the height above the terrain to fly.
+ */
+function applyHeightReference(world, drone, path, cfg, v) {
   const n = path.agl.length;
-  const need = new Float64Array(n);
-  for (let i = 0; i < n; i++) need[i] = world.requiredAgl(path.x[i], path.z[i], path.agl[i]);
-  if (path.vertical || path.hover) {
-    for (let i = 0; i < n; i++) path.agl[i] = Math.max(path.agl[i], need[i]);
+  if (cfg.altRef !== 'baro') {
+    if (!cfg.avoid) return;
+    const need = new Float64Array(n);
+    for (let i = 0; i < n; i++) need[i] = world.requiredAgl(path.x[i], path.z[i], path.agl[i]);
+    path.agl = path.vertical || path.hover ? need : rateLimit(need, path, drone, v);
     return;
   }
+  const home = world.pilot;
+  const eHome = world.elevAt(home.x, home.z);
+  const clearance = Math.max(cfg.clearance ?? 10, 0.5);
+  const e = new Float64Array(n);
+  const alt = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    e[i] = world.elevAt(path.x[i], path.z[i]);
+    const cmd = path.agl[i];
+    let agl = Math.max(eHome + cmd - e[i], Math.min(clearance, cmd));
+    if (cfg.avoid) agl = world.requiredAgl(path.x[i], path.z[i], agl);
+    alt[i] = e[i] + agl;
+  }
+  const out = path.vertical || path.hover ? alt : rateLimit(alt, path, drone, v);
+  path.agl = new Float64Array(n);
+  for (let i = 0; i < n; i++) path.agl[i] = out[i] - e[i];
+  path.eHome = eHome;
+}
+
+/**
+ * Makes a height profile flyable: each sample may sit at most one climb step
+ * below the next (climbs start early enough for the airframe's climb rate) and
+ * descents are at most 1.5× as steep. Works on heights above ground as well as
+ * on absolute altitudes.
+ */
+function rateLimit(need, path, drone, v) {
+  const n = need.length;
   // allowed height change per sample at the local speed and the airframe's climb rate
   const step = (i) => ((drone.climb * 0.8) / Math.max(path.speed ? path.speed[i] : v, 0.5)) * path.ds;
   const out = Float64Array.from(need);
@@ -456,7 +496,7 @@ function liftOverObstacles(world, drone, path, v) {
     for (let i = 1; i < n; i++) out[i] = Math.max(out[i], out[i - 1] - step(i) * 1.5);
     if (!path.open) out[0] = Math.max(out[0], out[n - 1] - step(0) * 1.5);
   }
-  path.agl = out;
+  return out;
 }
 
 // ----------------------------------------------------------------- kinematics

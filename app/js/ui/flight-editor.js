@@ -137,6 +137,7 @@ export class FlightEditor {
     const head = el('thead');
     const hr = el('tr');
     for (const [t, c] of [['#', ''], ['Height m', 'num'], ['Speed m/s', 'num'], ['Hold s', 'num'], ['', '']]) hr.append(el('th', c, t));
+    this.hHead = hr.children[1];
     head.append(hr);
     this.tbody = el('tbody');
     this.table.append(head, this.tbody);
@@ -202,6 +203,9 @@ export class FlightEditor {
     const p = this.cur;
     if (document.activeElement !== this.nameIn) this.nameIn.value = p.name;
     for (const btn of this.endSeg.querySelectorAll('button')) btn.setAttribute('aria-pressed', String(btn.dataset.end === p.end));
+    const baro = app.state.cfg.altRef === 'baro';
+    this.hHead.textContent = baro ? 'Alt. m' : 'Height m';
+    this.hHead.title = baro ? 'Altitude above the take-off point (barometric)' : 'Height above the ground (AGL)';
     const flying = app.state.cfg.pattern === 'custom' && app.state.cfg.profileId === p.id;
     this.flyBtn.textContent = flying ? 'Restart this profile' : 'Fly this profile';
     this.#renderTable();
@@ -236,7 +240,7 @@ export class FlightEditor {
       };
       tr.append(
         el('td', 'ed-idx', String(i + 1)),
-        cell(numberInput({ value: +w.h.toFixed(1), min: 1, max: 1000, step: 1, onChange: set('h'), title: 'Height above ground (m)' })),
+        cell(numberInput({ value: +w.h.toFixed(1), min: 1, max: 1000, step: 1, onChange: set('h'), title: this.app.state.cfg.altRef === 'baro' ? 'Altitude above the take-off point (m)' : 'Height above ground (m)' })),
         cell(numberInput({ value: +w.v.toFixed(1), min: 0.5, max: 100, step: 0.5, onChange: set('v'), title: 'Speed of the leg that starts here (m/s)' })),
         cell(numberInput({ value: Math.round(w.hold), min: 0, max: 600, step: 1, onChange: set('hold'), title: 'Hover here for this long (s); multirotors only' })),
         tdAct,
@@ -269,7 +273,13 @@ export class FlightEditor {
     if (fast) warn(`${fast} leg${fast > 1 ? 's are' : ' is'} faster than the drone’s ${drone.vMax} m/s and will be capped.`);
     if (drone.vMin && p.waypoints.some((w) => w.v < drone.vMin)) warn(`Legs slower than ${drone.vMin} m/s are flown at stall speed.`);
     if (drone.type === 'fixed' && p.waypoints.some((w) => w.hold > 0)) warn('A fixed wing cannot hold position; holds are ignored.');
-    const half = app.sim.world.half;
+    const world = app.sim.world;
+    if (app.state.cfg.altRef === 'baro') {
+      const clr = app.state.cfg.clearance;
+      const low = p.waypoints.filter((w) => app.sim.homeElev + w.h - world.elevAt(w.x, w.z) < Math.min(clr, w.h)).length;
+      if (low) warn(`${low} waypoint${low > 1 ? 's are' : ' is'} closer than ${clr} m to the ground at ${low > 1 ? 'their' : 'its'} altitude; the drone rises there.`);
+    }
+    const half = world.half;
     const out = p.waypoints.filter((w) => Math.abs(w.x) > half || Math.abs(w.z) > half).length;
     if (out) warn(`${out} waypoint${out > 1 ? 's lie' : ' lies'} outside this map.`);
     const scn = SCENARIO_BY_ID[p.scenario];
@@ -484,6 +494,13 @@ export class FlightEditor {
     this.app.markDirty();
   }
 
+  /** Height above the terrain at which a waypoint's marker is drawn (its altitude in barometric mode). */
+  #markAgl(w, e) {
+    const app = this.app;
+    if (app.state.cfg.altRef !== 'baro') return w.h;
+    return Math.max(app.sim.homeElev + w.h - (e ?? app.sim.world.elevAt(w.x, w.z)), 0.5);
+  }
+
   /** Index of the waypoint marker under a client position, or −1. */
   hitTest(cx, cy) {
     if (!this.mapEdit || !this.cur) return -1;
@@ -491,7 +508,7 @@ export class FlightEditor {
     let best = -1;
     let bd = 14;
     this.cur.waypoints.forEach((w, i) => {
-      for (const h of [w.h, 0]) {
+      for (const h of [this.#markAgl(w), 0]) {
         const p = this.app.project(w.x, w.z, h);
         if (!p) continue;
         const d = Math.hypot(p[0] + r.left - cx, p[1] + r.top - cy);
@@ -567,7 +584,7 @@ export class FlightEditor {
     const p = this.cur;
     const drone = app.drone();
     const cfg = app.state.cfg;
-    const key = `${JSON.stringify(p)}|${drone.id}|${cfg.avoid}|${w.scn.id}`;
+    const key = `${JSON.stringify(p)}|${drone.id}|${cfg.avoid}|${cfg.altRef}|${cfg.clearance}|${w.pilot.x},${w.pilot.z}|${w.scn.id}`;
     if (key !== this.planCache.key) {
       const path = buildPath(w, drone, { ...cfg, pattern: 'custom', profile: p, speed: drone.vCruise });
       const pts = [];
@@ -581,9 +598,10 @@ export class FlightEditor {
     p.waypoints.forEach((wp, i) => {
       const e = w.elevAt(wp.x, wp.z);
       const c = i === this.sel ? MARK_SEL : MARK;
-      res.marks.push([[wp.x, wp.z, e, 0, [c[0], c[1], c[2], 0.35]], [wp.x, wp.z, e, wp.h, c]]);
-      res.marks.push([[wp.x - r, wp.z, e, wp.h, c], [wp.x + r, wp.z, e, wp.h, c]]);
-      res.marks.push([[wp.x, wp.z - r, e, wp.h, c], [wp.x, wp.z + r, e, wp.h, c]]);
+      const h = this.#markAgl(wp, e);
+      res.marks.push([[wp.x, wp.z, e, 0, [c[0], c[1], c[2], 0.35]], [wp.x, wp.z, e, h, c]]);
+      res.marks.push([[wp.x - r, wp.z, e, h, c], [wp.x + r, wp.z, e, h, c]]);
+      res.marks.push([[wp.x, wp.z - r, e, h, c], [wp.x, wp.z + r, e, h, c]]);
     });
     // numbers
     while (this.labels.length < p.waypoints.length) {
@@ -597,7 +615,7 @@ export class FlightEditor {
         l.hidden = true;
         return;
       }
-      const s = app.project(wp.x, wp.z, wp.h);
+      const s = app.project(wp.x, wp.z, this.#markAgl(wp));
       if (!s) {
         l.hidden = true;
         return;
@@ -606,7 +624,7 @@ export class FlightEditor {
       l.classList.toggle('is-sel', i === this.sel);
       l.style.left = `${s[0]}px`;
       l.style.top = `${s[1]}px`;
-      const text = `${i + 1} · ${Math.round(wp.h)} m${wp.hold > 0 ? ` · ${Math.round(wp.hold)} s` : ''}`;
+      const text = `${i + 1} · ${Math.round(wp.h)} m${cfg.altRef === 'baro' ? ' alt' : ''}${wp.hold > 0 ? ` · ${Math.round(wp.hold)} s` : ''}`;
       if (l.textContent !== text) l.textContent = text;
     });
     return res;

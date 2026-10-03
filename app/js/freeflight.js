@@ -8,9 +8,10 @@
  * velocities, the airframe accelerates towards them within its acceleration
  * limit and tilts accordingly; centred sticks hold position and altitude.
  * Fixed wings fly coordinated turns (turn rate = g·tan φ / v) and never stall
- * below vMin. Altitude is held barometrically (absolute), so hills come
- * closer when you fly towards them. Ground and buildings are solid; tree
- * crowns are not.
+ * below vMin. With the throttle (fixed wing: pitch) centred the altitude is
+ * held - above the terrain ('agl', terrain following) or barometrically above
+ * take-off ('baro'), where the drone only rises when the ground closes in.
+ * Ground and buildings are solid; tree crowns are not.
  */
 import { clamp, DEG, TAU } from './util.js';
 import { G, minTurnRadius } from './flight.js';
@@ -35,15 +36,41 @@ export function createFree(dr) {
   };
 }
 
-/** Advances the state by h seconds; returns { bump, ground } events. */
-export function freeStep(f, inp, drone, world, h) {
+/**
+ * Advances the state by h seconds; returns { bump, ground } events.
+ * opts: { altRef: 'baro' (default) | 'agl', clearance: m (default 10) }.
+ */
+export function freeStep(f, inp, drone, world, h, opts = {}) {
   const ev = { bump: false, ground: false };
-  if (drone.type === 'fixed') stepFixed(f, inp, drone, world, h, ev);
-  else stepMulti(f, inp, drone, world, h, ev);
+  if (drone.type === 'fixed') stepFixed(f, inp, drone, world, h, ev, opts);
+  else stepMulti(f, inp, drone, world, h, ev, opts);
   return ev;
 }
 
-function stepMulti(f, inp, d, world, h, ev) {
+/**
+ * Vertical speed set-point. Off centre the stick commands a climb or descent
+ * rate (so you can always land); centred, the altitude is held. 'agl' keeps
+ * the height above the terrain it had when the stick was released; 'baro'
+ * keeps the altitude and rises only where the terrain ahead comes closer than
+ * the clearance - or than the height it was holding, if that was lower - and
+ * sinks back to its altitude afterwards.
+ */
+function verticalTarget(f, cmd, climb, world, opts, sink = 0.8) {
+  if (Math.abs(cmd) > 0.05) {
+    f.hold = null;
+    return cmd >= 0 ? cmd * climb : cmd * climb * sink;
+  }
+  const ground = (t) => world.elevAt(f.x + f.vx * t, f.z + f.vz * t);
+  const g0 = ground(0);
+  if (!f.hold) f.hold = { y: f.y, agl: f.y - g0 };
+  let ahead = g0;
+  for (const t of [0.5, 1, 1.5, 2.5]) ahead = Math.max(ahead, ground(t));
+  const keep = Math.min(opts.clearance ?? 10, f.hold.agl);
+  const want = opts.altRef === 'agl' ? ahead + f.hold.agl : Math.max(f.hold.y, ahead + keep);
+  return clamp((want - f.y) * 1.5, -climb * sink, climb);
+}
+
+function stepMulti(f, inp, d, world, h, ev, opts) {
   const tilt = (d.maxTilt || 30) * DEG;
   const vMax = d.vMax;
   const a = d.accel || 5;
@@ -64,7 +91,7 @@ function stepMulti(f, inp, d, world, h, ev) {
   }
   f.vx += dx;
   f.vz += dz;
-  const vyT = inp.thr >= 0 ? inp.thr * d.climb : inp.thr * d.climb * 0.8;
+  const vyT = verticalTarget(f, inp.thr, d.climb, world, opts);
   f.vy += clamp(vyT - f.vy, -a * h, a * h);
   // attitude: tilt balances acceleration plus drag (drag tuned so vMax needs the full tilt)
   const kd = (Math.tan(tilt) * G) / (vMax * vMax);
@@ -89,7 +116,7 @@ function stepMulti(f, inp, d, world, h, ev) {
   }
 }
 
-function stepFixed(f, inp, d, world, h, ev) {
+function stepFixed(f, inp, d, world, h, ev, opts) {
   const vMin = d.vMin || 10;
   const vMax = Math.max(d.vMax, vMin + 1);
   const a = d.accel || 2.5;
@@ -99,7 +126,7 @@ function stepFixed(f, inp, d, world, h, ev) {
   const bankMax = (d.maxBank || 35) * DEG;
   f.bank += clamp(inp.roll * bankMax - f.bank, -1.6 * h, 1.6 * h);
   f.yaw = wrap(f.yaw + ((G * Math.tan(f.bank)) / f.airspeed + inp.yaw * 0.25) * h);
-  const vyT = -inp.pitch * d.climb;
+  const vyT = verticalTarget(f, -inp.pitch, d.climb, world, opts, 1);
   f.vy += clamp(vyT - f.vy, -3 * h, 3 * h);
   f.vy = clamp(f.vy, -0.6 * f.airspeed, 0.6 * f.airspeed);
   const vh = Math.sqrt(Math.max(f.airspeed * f.airspeed - f.vy * f.vy, 1));
@@ -157,30 +184,38 @@ function move(f, world, h, ev, clearance) {
 /**
  * Return-to-home autopilot: climb to a safe height (and over obstacles ahead),
  * fly back, then descend and land next to the pilot. Fixed wings circle the
- * pilot instead. `st` carries the phase between calls.
+ * pilot instead. `st` carries the phase and the return height between calls:
+ * st.alt above the ground ('agl') or st.yAlt as altitude ('baro', where the
+ * ground and obstacles ahead only lift it when they come closer).
  */
-export function rthInput(f, drone, home, world, st) {
+export function rthInput(f, drone, home, world, st, opts = {}) {
   const dx = home.x - f.x;
   const dz = home.z - f.z;
   const dist = Math.hypot(dx, dz);
-  const agl = f.y - world.elevAt(f.x, f.z);
+  const e = world.elevAt(f.x, f.z);
   const want = Math.atan2(dz, dx);
   const err = wrap(want - f.yaw);
   const inp = { thr: 0, yaw: 0, pitch: 0, roll: 0 };
+  const baro = opts.altRef === 'baro' && Number.isFinite(st.yAlt);
   if (drone.type === 'fixed') {
     const R = Math.max(minTurnRadius(drone, f.airspeed || drone.vCruise) * 1.4, 40);
     inp.roll = dist < R * 1.6 ? 0.8 : clamp(err * 1.5, -1, 1);
-    inp.pitch = clamp((agl - st.alt) / 25, -1, 1);
+    const yT = baro ? Math.max(st.yAlt, e + Math.min(opts.clearance ?? 10, 40)) : e + st.alt;
+    inp.pitch = clamp((f.y - yT) / 25, -1, 1);
     st.phase = dist < R * 1.6 ? 'circle' : 'return';
     return inp;
   }
   // clear whatever stands in the next 40 m towards home (and right here)
-  let top = world.obstacleTop(f.x, f.z);
-  for (const d of [15, 30, 45]) top = Math.max(top, world.obstacleTop(f.x + Math.cos(want) * d, f.z + Math.sin(want) * d));
-  const target = Math.max(st.alt, top + 6);
-  if (st.phase === 'climb' && agl >= target - 1.5) st.phase = 'return';
+  let top = e + world.obstacleTop(f.x, f.z);
+  for (const d of [15, 30, 45]) {
+    const x = f.x + Math.cos(want) * d;
+    const z = f.z + Math.sin(want) * d;
+    top = Math.max(top, world.elevAt(x, z) + world.obstacleTop(x, z));
+  }
+  const target = Math.max(baro ? st.yAlt : e + st.alt, top + 6);
+  if (st.phase === 'climb' && f.y >= target - 1.5) st.phase = 'return';
   if (st.phase === 'return' && dist < 3) st.phase = 'land';
-  if (st.phase === 'return' && agl < target - 6) st.phase = 'climb';
+  if (st.phase === 'return' && f.y < target - 6) st.phase = 'climb';
   if (st.phase === 'climb') {
     inp.thr = 1;
     return inp;
@@ -188,7 +223,7 @@ export function rthInput(f, drone, home, world, st) {
   if (st.phase === 'return') {
     inp.yaw = clamp(err * 2, -1, 1);
     inp.pitch = Math.cos(err) > 0.85 ? clamp(dist / 40, 0.05, 1) * (drone.vCruise / drone.vMax) : 0;
-    inp.thr = clamp((target - agl) / 8, -1, 1);
+    inp.thr = clamp((target - f.y) / 8, -1, 1);
     return inp;
   }
   // land: creep onto the spot, then descend
@@ -196,7 +231,7 @@ export function rthInput(f, drone, home, world, st) {
   const sf = Math.sin(f.yaw);
   inp.pitch = clamp((cf * dx + sf * dz) / 15, -0.15, 0.15);
   inp.roll = clamp((-sf * dx + cf * dz) / 15, -0.15, 0.15);
-  inp.thr = f.onGround ? 0 : agl > 8 ? -1 : -0.4;
+  inp.thr = f.onGround ? 0 : f.y - e > 8 ? -1 : -0.4;
   if (f.onGround) st.phase = 'landed';
   return inp;
 }

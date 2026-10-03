@@ -7,6 +7,7 @@
  * Elevations are stored relative to the lowest point of the map.
  */
 import { rng, makeNoise2D, fbm, clamp, smoothstep, hashString } from './util.js';
+import { MODEL } from './rf/models.js';
 
 export const LAND = {
   GRASS: 0, FIELD: 1, FOREST: 2, WATER: 3, ROAD: 4, STREET: 5,
@@ -30,10 +31,7 @@ export const GROUND = [
 
 /** Crowns start at this fraction of tree height; below is the sparser trunk zone. */
 export const CROWN_BASE = 0.35;
-/** Fraction of the canopy volume that is foliage (gaps between crowns). */
-export const CANOPY_DENSITY = 0.85;
-/** Trunk zone attenuates much less than crowns. */
-export const TRUNK_WEIGHT = 0.3;
+// canopy density (foliage share of the canopy volume) and the trunk-zone weight are tunable: MODEL in rf/models.js
 
 export class World {
   /** @param {object} scn scenario definition (see scenarios.js) */
@@ -534,7 +532,7 @@ export class World {
     out.tB = tB;
     out.crown = crown;
     out.trunk = trunk;
-    out.vegDepth = CANOPY_DENSITY * (crown + TRUNK_WEIGHT * trunk);
+    out.vegDepth = MODEL.canopyDensity * (crown + MODEL.trunkWeight * trunk);
     out.bLen = bLen;
     out.firstVeg = firstVeg;
     return out;

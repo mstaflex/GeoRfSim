@@ -12,16 +12,142 @@ import { C0, DEG, clamp } from '../util.js';
  * in the NASA/Matolak air-ground campaigns. Ground constants follow ITU-R P.527,
  * delay spreads and shadowing follow 3GPP TR 38.901 / TR 36.777 orders of
  * magnitude. `ism` = assumed unlicensed-band noise rise [dB at ground, dB per
- * decade of receiver height above 10 m].
+ * decade of receiver height above 10 m]; `fdEnv` = Doppler spread of moving
+ * scatterers (leaves, traffic) seen even by a hovering drone.
+ * These values are tunable (Settings → Model); DEFAULT_ENVS keeps the originals.
  */
 export const ENVS = {
-  water: { name: 'Water', rank: 0, k0: 10, k90: 28, epsR: 80, sigma: 0.01, rough: 0.02, ds: 20, sfLos: 2.5, sfNlos: 6, dcorr: 120, ism: [0.2, 0.4] },
-  open: { name: 'Open / rural', rank: 1, k0: 6, k90: 22, epsR: 15, sigma: 0.005, rough: 0.06, ds: 30, sfLos: 4, sfNlos: 8, dcorr: 60, ism: [0.3, 0.6] },
-  forest: { name: 'Forest', rank: 2, k0: 2, k90: 16, epsR: 20, sigma: 0.01, rough: 0.6, ds: 60, sfLos: 5, sfNlos: 8, dcorr: 30, ism: [0.2, 0.5] },
-  suburban: { name: 'Suburban', rank: 3, k0: 3, k90: 18, epsR: 6, sigma: 0.005, rough: 0.3, ds: 50, sfLos: 4, sfNlos: 6, dcorr: 37, ism: [1.5, 1.5] },
-  urban: { name: 'Urban', rank: 4, k0: 0, k90: 15, epsR: 5, sigma: 0.01, rough: 0.8, ds: 100, sfLos: 4, sfNlos: 7.8, dcorr: 13, ism: [3, 2.5] },
-  dense: { name: 'Dense urban', rank: 5, k0: -3, k90: 12, epsR: 5, sigma: 0.01, rough: 1.2, ds: 140, sfLos: 4, sfNlos: 8, dcorr: 10, ism: [4, 3] },
+  water: { name: 'Water', rank: 0, k0: 10, k90: 28, epsR: 80, sigma: 0.01, rough: 0.02, ds: 20, sfLos: 2.5, sfNlos: 6, dcorr: 120, fdEnv: 0.3, ism: [0.2, 0.4] },
+  open: { name: 'Open / rural', rank: 1, k0: 6, k90: 22, epsR: 15, sigma: 0.005, rough: 0.06, ds: 30, sfLos: 4, sfNlos: 8, dcorr: 60, fdEnv: 0.3, ism: [0.3, 0.6] },
+  forest: { name: 'Forest', rank: 2, k0: 2, k90: 16, epsR: 20, sigma: 0.01, rough: 0.6, ds: 60, sfLos: 5, sfNlos: 8, dcorr: 30, fdEnv: 3, ism: [0.2, 0.5] },
+  suburban: { name: 'Suburban', rank: 3, k0: 3, k90: 18, epsR: 6, sigma: 0.005, rough: 0.3, ds: 50, sfLos: 4, sfNlos: 6, dcorr: 37, fdEnv: 0.3, ism: [1.5, 1.5] },
+  urban: { name: 'Urban', rank: 4, k0: 0, k90: 15, epsR: 5, sigma: 0.01, rough: 0.8, ds: 100, sfLos: 4, sfNlos: 7.8, dcorr: 13, fdEnv: 1, ism: [3, 2.5] },
+  dense: { name: 'Dense urban', rank: 5, k0: -3, k90: 12, epsR: 5, sigma: 0.01, rough: 1.2, ds: 140, sfLos: 4, sfNlos: 8, dcorr: 10, fdEnv: 1, ism: [4, 3] },
 };
+export const DEFAULT_ENVS = JSON.parse(JSON.stringify(ENVS));
+
+// ----------------------------------------------------------------- tunable parameters
+
+/**
+ * Scalar model parameters, tunable at run time (Settings → Model). The model
+ * functions and the simulation read them on every step, so changes act at once.
+ */
+export const MODEL = {
+  canopyDensity: 0.85, // share of the canopy volume that is foliage (gaps between crowns)
+  trunkWeight: 0.3, // attenuation of the trunk zone below the crowns, relative to crowns
+  foliage: 1, // × Weissberger specific attenuation (≈ 0.5 out of leaf)
+  foliageMax: 1, // × ITU-R P.833 maximum (saturation) attenuation
+  terrain: 1, // × knife-edge loss at terrain obstacles
+  buildings: 1, // × rooftop knife-edge loss
+  nlosCap: true, // cap the rooftop loss at the 3GPP NLOS excess loss (street-canyon multipath)
+  reflection: 1, // × ground reflection coefficient (|Γ| stays ≤ 1)
+  roughness: 1, // × surface roughness σh
+  ismRise: 1, // × unlicensed-band noise rise
+};
+export const DEFAULT_MODEL = { ...MODEL };
+
+/**
+ * UI and link metadata of the tunable parameters. `id` is the short code used
+ * in links; values from outside are clamped to [min, max].
+ */
+export const MODEL_SPECS = [
+  { key: 'canopyDensity', id: 'cd', group: 'Vegetation', label: 'Canopy density', min: 0.05, max: 1, step: 0.05, unit: '%', help: 'Share of the canopy volume that is foliage - the gaps between crowns let the signal through' },
+  { key: 'trunkWeight', id: 'tw', group: 'Vegetation', label: 'Trunk zone', min: 0, max: 1, step: 0.05, unit: '%', help: 'Attenuation of the trunk zone below the crowns, relative to the crowns' },
+  { key: 'foliage', id: 'fo', group: 'Vegetation', label: 'Foliage attenuation', min: 0.2, max: 3, step: 0.05, unit: '×', help: 'Scales Weissberger’s specific attenuation (dB per m of foliage). Out of leaf ≈ 0.5×' },
+  { key: 'foliageMax', id: 'fm', group: 'Vegetation', label: 'Max. foliage loss', min: 0.25, max: 3, step: 0.05, unit: '×', help: 'Scales the ITU-R P.833 saturation: beyond it the energy arrives scattered over and around the canopy' },
+  { key: 'terrain', id: 'te', group: 'Obstacles', label: 'Terrain diffraction', min: 0, max: 2, step: 0.05, unit: '×', help: 'Scales the knife-edge loss at hills and ridges' },
+  { key: 'buildings', id: 'bu', group: 'Obstacles', label: 'Rooftop diffraction', min: 0, max: 2, step: 0.05, unit: '×', help: 'Scales the knife-edge loss over buildings' },
+  { key: 'nlosCap', id: 'nc', group: 'Obstacles', label: 'Street canyons limit the building loss', type: 'check', help: 'Cap the rooftop loss at the 3GPP NLOS excess loss: energy also arrives scattered through the streets' },
+  { key: 'reflection', id: 're', group: 'Ground', label: 'Ground reflection', min: 0, max: 1.5, step: 0.05, unit: '×', help: 'Scales the specular ground reflection (two-ray); the coefficient stays ≤ 1' },
+  { key: 'roughness', id: 'ro', group: 'Ground', label: 'Surface roughness', min: 0, max: 5, step: 0.1, unit: '×', help: 'Scales the height deviation σh of the ground (Ament): rough ground scatters instead of mirroring' },
+  { key: 'ismRise', id: 'is', group: 'Noise', label: 'Unlicensed-band noise', min: 0, max: 3, step: 0.05, unit: '×', help: 'Scales the assumed noise rise in the 2.4 GHz, 5.8 GHz and sub-GHz ISM bands' },
+];
+
+/** Per-environment parameters (values live in ENVS[env]). */
+export const ENV_SPECS = [
+  { key: 'k0', id: 'k0', label: 'Rician K at 0° elevation', min: -15, max: 30, step: 0.5, unit: 'dB', help: 'Ratio of direct to scattered power for a low link; lower = more scattering, deeper fades' },
+  { key: 'k90', id: 'k9', label: 'Rician K at 90° elevation', min: -10, max: 40, step: 0.5, unit: 'dB', help: 'The same straight overhead; K rises roughly linearly in dB with the elevation angle' },
+  { key: 'ds', id: 'ds', label: 'Delay spread', min: 5, max: 600, step: 5, unit: 'ns', help: 'RMS delay spread near the ground (×2.5 in NLOS, shrinking above the clutter); sets the coherence bandwidth' },
+  { key: 'sfLos', id: 'sl', label: 'Shadowing σ, LOS', min: 0, max: 12, step: 0.1, unit: 'dB', help: 'Log-normal shadowing in line of sight (decays with height)' },
+  { key: 'sfNlos', id: 'sn', label: 'Shadowing σ, NLOS', min: 0, max: 16, step: 0.1, unit: 'dB', help: 'Log-normal shadowing behind obstacles' },
+  { key: 'dcorr', id: 'dc', label: 'Shadowing decorrelation', min: 2, max: 300, step: 1, unit: 'm', help: 'Distance over which the shadowing changes (Gudmundson)' },
+  { key: 'fdEnv', id: 'fd', label: 'Moving scatterers', min: 0, max: 10, step: 0.1, unit: 'Hz', help: 'Doppler spread from leaves and traffic, also seen by a hovering drone' },
+  { key: 'ism0', id: 'ni', label: 'Unlicensed noise at ground', min: 0, max: 12, step: 0.1, unit: 'dB', help: 'Assumed ISM-band noise rise for a receiver near the ground (more with height in towns)' },
+];
+export const ENV_IDS = { water: 'w', open: 'o', forest: 'f', suburban: 's', urban: 'u', dense: 'd' };
+
+const envGet = (env, key) => (key === 'ism0' ? ENVS[env].ism[0] : ENVS[env][key]);
+const envDefault = (env, key) => (key === 'ism0' ? DEFAULT_ENVS[env].ism[0] : DEFAULT_ENVS[env][key]);
+
+export function getEnvParam(env, key) {
+  return envGet(env, key);
+}
+
+/** Sets one per-environment parameter (clamped to its range). */
+export function setEnvParam(env, key, value) {
+  const spec = ENV_SPECS.find((p) => p.key === key);
+  if (!ENVS[env] || !spec || !Number.isFinite(value)) return;
+  const v = clamp(value, spec.min, spec.max);
+  if (key === 'ism0') ENVS[env].ism[0] = v;
+  else ENVS[env][key] = v;
+}
+
+/** Sets one scalar parameter (clamped; booleans for check-type parameters). */
+export function setModelParam(key, value) {
+  const spec = MODEL_SPECS.find((p) => p.key === key);
+  if (!spec) return;
+  if (spec.type === 'check') MODEL[key] = !!value;
+  else if (Number.isFinite(value)) MODEL[key] = clamp(value, spec.min, spec.max);
+}
+
+export function resetModel() {
+  Object.assign(MODEL, DEFAULT_MODEL);
+  for (const env of Object.keys(ENVS)) {
+    const d = DEFAULT_ENVS[env];
+    Object.assign(ENVS[env], { ...d, ism: d.ism.slice() });
+  }
+}
+
+/** Parameters that differ from the shipped values: [{ id, value }] with link codes. */
+export function modelChanges() {
+  const out = [];
+  for (const s of MODEL_SPECS) if (MODEL[s.key] !== DEFAULT_MODEL[s.key]) out.push({ id: s.id, value: s.type === 'check' ? (MODEL[s.key] ? 1 : 0) : MODEL[s.key] });
+  for (const [env, e] of Object.entries(ENV_IDS)) {
+    for (const s of ENV_SPECS) if (envGet(env, s.key) !== envDefault(env, s.key)) out.push({ id: `${e}.${s.id}`, value: envGet(env, s.key) });
+  }
+  return out;
+}
+
+/** Compact link form of the changes, e.g. "cd:0.5,u.k0:-6". Empty when nothing changed. */
+export function encodeModel() {
+  return modelChanges().map(({ id, value }) => `${id}:${+(+value).toFixed(3)}`).join(',');
+}
+
+/** Applies a link string from encodeModel() on top of the defaults; unknown entries are ignored. */
+export function decodeModel(str) {
+  resetModel();
+  if (typeof str !== 'string' || str.length > 2000) return 0;
+  let n = 0;
+  for (const part of str.split(',')) {
+    const [id, raw] = part.split(':');
+    const value = Number(raw);
+    if (!id || raw === undefined || !Number.isFinite(value)) continue;
+    const dot = id.indexOf('.');
+    if (dot < 0) {
+      const spec = MODEL_SPECS.find((p) => p.id === id);
+      if (!spec) continue;
+      setModelParam(spec.key, spec.type === 'check' ? value !== 0 : value);
+      n++;
+    } else {
+      const env = Object.keys(ENV_IDS).find((k) => ENV_IDS[k] === id.slice(0, dot));
+      const spec = ENV_SPECS.find((p) => p.id === id.slice(dot + 1));
+      if (!env || !spec) continue;
+      setEnvParam(env, spec.key, value);
+      n++;
+    }
+  }
+  return n;
+}
 
 // ----------------------------------------------------------------- free space
 
@@ -69,17 +195,17 @@ export function knifeEdge(nu) {
 
 // ----------------------------------------------------------------- vegetation
 
-/** Weissberger modified exponential decay model (230 MHz - 95 GHz, depth ≤ 400 m). */
+/** Weissberger modified exponential decay model (230 MHz - 95 GHz, depth ≤ 400 m), scaled by MODEL.foliage. */
 export function weissberger(f, depth) {
   if (depth <= 0) return 0;
-  const k = Math.pow(f / 1e9, 0.284);
+  const k = Math.pow(f / 1e9, 0.284) * MODEL.foliage;
   if (depth < 14) return 0.45 * k * depth;
   return 1.33 * k * Math.pow(Math.min(depth, 400), 0.588);
 }
 
 /** ITU-R P.833 maximum excess attenuation of in-leaf woodland, A_m = 0.18·f^0.752 (f in MHz). */
 export function p833MaxAttenuation(f) {
-  return 0.18 * Math.pow(f / 1e6, 0.752);
+  return 0.18 * Math.pow(f / 1e6, 0.752) * MODEL.foliageMax;
 }
 
 /**
@@ -132,7 +258,7 @@ export function groundReflection(psi, f, epsR, sigma, pol) {
 
 /** Specular attenuation of a rough surface (Rayleigh criterion / Ament): exp(−8(π σh sinψ / λ)²). */
 export function roughnessFactor(psi, f, sigmaH) {
-  const x = (Math.PI * sigmaH * Math.sin(psi) * f) / C0;
+  const x = (Math.PI * sigmaH * MODEL.roughness * Math.sin(psi) * f) / C0;
   return Math.exp(-8 * x * x);
 }
 

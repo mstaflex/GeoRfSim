@@ -48,6 +48,8 @@ Everything applies immediately. There are no "apply" buttons.
 | --- | --- |
 | Scenario, drone, pattern | selects in the top bar (or keys `1`…`6` for scenarios) |
 | Speed, height, pattern size | sliders. Height is a log slider (1 m – 1 km) with presets 2 / 10 / 30 / 60 / 120 / 300 m |
+| Height reference | *AGL* / *Baro* next to the height (`B`): follow the terrain, or hold the altitude above take-off and rise only where the ground closes in. See below |
+| Model parameters | *Model…* in the Influences card, or the end of Settings: canopy density, scattering per environment, diffraction, ground reflection, noise. See below |
 | Play, pause, time warp | `Space`, `,` / `.` (×0.25 … ×20), `R` restarts and clears the track |
 | Camera | drag: orbit · right-drag or Shift: pan · wheel: zoom · double-click: look there |
 | Camera modes | Orbit, Follow, Chase, Top, Pilot view, FPV (`C` cycles, `F` `T` `P`) |
@@ -57,11 +59,12 @@ Everything applies immediately. There are no "apply" buttons.
 | Move things | "Move: Pattern centre / Pilot / Cell site", then click the 3-D view or the minimap |
 | Technology in detail | click a row in the table, or `↑` / `↓` |
 | Antennas | ground and drone antenna selects in the *Antennas* card. *Auto* uses each technology's typical antenna |
-| Settings (`S`) | height scale (log / linear / true), h₀, exaggeration, terrain relief, tree size, layers, track colouring, pilot antenna height, interference, cell load, shadowing, fading, obstacle avoidance |
+| Settings (`S`) | height scale (log / linear / true), h₀, exaggeration, terrain relief, tree size, layers, track colouring, obstacle avoidance, height reference and ground clearance, pilot antenna height, interference, cell load, shadowing, fading, model parameters |
 | Region | EU / US switch above the table (frequencies and Tx powers) |
 
 The URL carries the scenario, drone, pattern, speed, height, size, centre,
-technology and antennas, so a link reproduces the setup. When a custom drone or
+technology, antennas, height reference and every model parameter you changed,
+so a link reproduces the setup. When a custom drone or
 a flight profile is in use, the link carries it too, so the recipient gets
 them without any files. Display settings, flight profiles, custom drones and
 free-flight preferences are remembered in `localStorage`, in this browser only.
@@ -155,11 +158,13 @@ plus both sticks.
   and centred sticks hold position and altitude. Fixed wings fly coordinated
   turns (turn rate = g·tan φ / v) and never drop below stall speed.
 * Ground and buildings are solid, and the drone bumps off walls. Tree crowns are
-  not solid, so under-canopy flight is possible. Altitude is barometric, so
-  hills come closer when you fly towards them.
-* **Return home** (`H`, or the button) climbs to at least 40 m and over
-  whatever stands in the way, flies back and lands 6 m from the pilot. A fixed
-  wing circles overhead instead. Moving a stick takes control back.
+  not solid, so under-canopy flight is possible. A centred throttle holds the
+  height above ground (AGL) or the altitude (barometric, rising only when the
+  terrain ahead closes in), as set by the height reference.
+* **Return home** (`H`, or the button) climbs to at least 40 m (above ground,
+  or above take-off when barometric) and over whatever stands in the way, flies
+  back and lands 6 m from the pilot. A fixed wing circles overhead instead.
+  Moving a stick takes control back.
 * **Failsafe.** With *failsafe RTH* on, the chosen control link (ELRS 2.4 GHz
   by default, any technology can be picked) is watched. When it loses more than
   90 % of its packets for a second, the drone stops hearing the sticks and
@@ -170,6 +175,68 @@ plus both sticks.
 * Leaving free flight (`G`) resumes the selected pattern at the point closest
   to the drone. The jump is left out of the drawn track. *Save as flight
   profile* keeps the flight.
+
+## Height reference: AGL or barometric
+
+![Barometric altitude: level at 60 m above take-off, up over the forested ridge only where the ground comes within the clearance, and back down behind it - where the ELRS link is lost](docs/barometric.jpg)
+
+The switch next to the height slider (`B`) decides what the height means. It
+applies to patterns, flight profiles and free flight alike.
+
+* **AGL** (default): height above the ground below the drone. The drone
+  follows the terrain, and *Climb over buildings & tree crowns* lifts it over
+  roofs and canopies.
+* **Barometric**: altitude above the take-off point (the pilot's ground), held
+  the way a barometric altimeter does. Over a valley the drone simply ends up
+  higher above the ground. It rises **only where the ground closes in**: when
+  the terrain - with avoidance also a roof or tree crown - would come closer
+  than the *minimum ground clearance* (Settings → Flight, default 10 m), or
+  closer than the commanded height if that is lower. The climb starts early
+  enough for the airframe's climb rate, and afterwards the drone sinks back to
+  its altitude.
+
+In barometric mode the HUD shows both, e.g. `81 m alt · 48 m AGL`. Flight
+profile heights become altitudes too: the editor's column reads *Alt.*, markers
+sit at the altitude, and it warns about waypoints closer to the ground than the
+clearance. In free flight a centred throttle holds the height above ground
+(AGL, terrain following) or the altitude (barometric, rising when the terrain
+ahead closes in). Throttle down still lands. The on-screen display shows ALT
+(above take-off) and AGL.
+
+## Tuning the model
+
+![Model parameters in the forest: thinner canopy, out-of-leaf foliage and wind in the trees, with changed values marked](docs/model.jpg)
+
+*Model…* in the Influences card (or the end of the Settings drawer) opens the
+model parameters. They act on the running simulation at once. Changed values
+are highlighted with a ↺ to reset each one, and the link carries them.
+
+| Group | Parameter | Default | What it does |
+| --- | --- | --- | --- |
+| Vegetation | Canopy density | 85 % | Share of the canopy volume that is foliage. It scales the foliage depth along a ray |
+| | Trunk zone | 30 % | Attenuation below the crowns, relative to the crowns (under-canopy flight) |
+| | Foliage attenuation | 1× | Scales Weissberger's specific attenuation (≈ 0.5× out of leaf) |
+| | Max. foliage loss | 1× | Scales the ITU-R P.833 saturation level |
+| Obstacles | Terrain diffraction | 1× | Scales the knife-edge loss at hills and ridges |
+| | Rooftop diffraction | 1× | Scales the knife-edge loss over buildings |
+| | Street canyons limit the building loss | on | Caps the rooftop loss at the 3GPP NLOS excess loss |
+| Ground | Ground reflection | 1× | Scales the specular two-ray reflection (the coefficient stays ≤ 1) |
+| | Surface roughness | 1× | Scales σh in the Ament factor: rough ground scatters instead of mirroring |
+| Noise | Unlicensed-band noise | 1× | Scales the assumed ISM-band noise rise |
+
+Per environment class (open, forest, suburb, urban, dense urban, water) there
+is a second set. This is where *scattering in towns* lives:
+
+| Parameter | Urban default | What it does |
+| --- | --- | --- |
+| Rician K at 0° / 90° elevation | 0 / 15 dB | Direct-to-scattered power for a low link and straight overhead. Lower K means more scattering and deeper fades |
+| Delay spread | 100 ns | RMS delay spread near the ground (×2.5 in NLOS, shrinking above the clutter). It sets the coherence bandwidth |
+| Shadowing σ, LOS / NLOS | 4 / 7.8 dB | Log-normal shadowing |
+| Shadowing decorrelation | 13 m | Distance over which the shadowing changes |
+| Moving scatterers | 1 Hz | Doppler spread from leaves and traffic, seen even when hovering |
+| Unlicensed noise at ground | 3 dB | ISM-band noise rise for a receiver near the ground |
+
+The tab of the class that the selected link sees right now is pre-selected.
 
 ## Height scale
 
@@ -287,17 +354,18 @@ app/
     main.js        UI controller: state, controls, render loop, panels, table
     sim.js         simulation engine: geometry, per-technology link, fading samples, 5 s stats, track,
                    path following (holds, leg speeds, acceleration), free flight and RTH hand-over
-    flight.js      drone profiles, patterns, waypoint plans → paths, obstacle-safe height profile, attitude
-    freeflight.js  manual flight dynamics (multirotor position mode, fixed wing), collisions, return home
+    flight.js      drone profiles, patterns, waypoint plans → paths, AGL / barometric height profile, attitude
+    freeflight.js  manual flight dynamics (multirotor position mode, fixed wing), altitude hold, collisions, return home
     profiles.js    custom drones & flight profiles: validation, storage, link encoding, JSON, conversions
     world.js       procedural world: terrain, land use, buildings, trees, LOS profile queries
     scenarios.js   the six scenarios
     charts.js      2-D charts: distribution, history, antenna polar, minimap
     util.js        seeded RNG, noise, Bessel functions, formatting
-    rf/            models.js, antennas.js, fading.js, tech.js, interference.js
+    rf/            models.js (incl. the tunable MODEL parameters), antennas.js, fading.js, tech.js, interference.js
     gfx/           renderer.js (WebGL2), camera.js, meshes.js, gl.js, mat.js
-    ui/            flight-editor.js, drone-editor.js, pilot.js (free-flight input & OSD), dom.js
-tests/             node:test unit tests (models, antennas, fading, worlds, simulation, profiles, free flight)
+    ui/            flight-editor.js, drone-editor.js, pilot.js (free-flight input & OSD), model-panel.js, dom.js
+tests/             node:test unit tests (models, antennas, fading, worlds, simulation, profiles, free flight,
+                   height reference, model parameters)
 Dockerfile, nginx.conf, docker-compose.yml
 ```
 

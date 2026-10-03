@@ -9,12 +9,13 @@ import {
 import { FlightEditor } from './ui/flight-editor.js';
 import { DroneEditor } from './ui/drone-editor.js';
 import { PilotUI } from './ui/pilot.js';
+import { ModelPanel } from './ui/model-panel.js';
 import { $, el } from './ui/dom.js';
 import { TECHS } from './rf/tech.js';
 import {
   ANTENNAS, GROUND_ANTENNA_IDS, AIR_ANTENNA_IDS, axesFromAzTilt, gainWorld, gainLocal, airGainBody, sectorGain,
 } from './rf/antennas.js';
-import { ENVS } from './rf/models.js';
+import { ENVS, encodeModel, decodeModel, modelChanges } from './rf/models.js';
 import { Renderer } from './gfx/renderer.js';
 import { OrbitCamera, CameraControls } from './gfx/camera.js';
 import { rampColor } from './gfx/meshes.js';
@@ -63,6 +64,7 @@ const DEFAULT_VIEW = {
 };
 
 const savedView = store.get('georfsim.view', {});
+let modelPanel = null; // settings → model parameters (built with the settings drawer)
 const state = {
   scenario: 'urban',
   primary: 'wifi24',
@@ -72,6 +74,7 @@ const state = {
   place: null,
   cfg: {
     drone: 'prosumer', pattern: 'route', speed: 8, height: 15, size: 400, heading: 0, center: [0, 0], avoid: true, profileId: null, profile: null,
+    altRef: 'agl', clearance: 10,
     region: 'eu', gsAnt: 'auto', airAnt: 'auto', pilotH: 1.5, interference: true, load: 0.5, shadowing: true, fading: true,
   },
   view: { ...DEFAULT_VIEW, ...savedView, layers: { ...DEFAULT_VIEW.layers, ...(savedView.layers || {}) } },
@@ -98,7 +101,7 @@ function readHash() {
   if (s && SCENARIO_BY_ID[s]) out.scenario = s;
   const map = { d: 'drone', p: 'pattern', ga: 'gsAnt', aa: 'airAnt', r: 'region' };
   for (const [k, key] of Object.entries(map)) if (h.has(k)) out.cfg[key] = h.get(k);
-  const nums = { v: 'speed', h: 'height', z: 'size', hd: 'heading', ph: 'pilotH' };
+  const nums = { v: 'speed', h: 'height', z: 'size', hd: 'heading', ph: 'pilotH', cl: 'clearance' };
   for (const [k, key] of Object.entries(nums)) if (h.has(k) && Number.isFinite(+h.get(k))) out.cfg[key] = +h.get(k);
   if (h.has('c')) {
     const c = h.get('c').split(',').map(Number);
@@ -113,6 +116,9 @@ function readHash() {
   if (out.cfg.gsAnt && out.cfg.gsAnt !== 'auto' && !GROUND_ANTENNA_IDS.includes(out.cfg.gsAnt)) delete out.cfg.gsAnt;
   if (out.cfg.airAnt && out.cfg.airAnt !== 'auto' && !AIR_ANTENNA_IDS.includes(out.cfg.airAnt)) delete out.cfg.airAnt;
   if (out.cfg.region && !['eu', 'us'].includes(out.cfg.region)) delete out.cfg.region;
+  if (h.get('ar') === 'baro') out.cfg.altRef = 'baro';
+  if ('clearance' in out.cfg) out.cfg.clearance = clamp(out.cfg.clearance, 1, 100);
+  if (h.has('m')) decodeModel(h.get('m'));
   const t = h.get('t');
   if (t && TECHS.some((x) => x.id === t)) out.primary = t;
   return out;
@@ -126,11 +132,15 @@ function hashOf({ scenario = state.scenario, cfg = state.cfg, primary = state.pr
     hd: Math.round(c.heading), c: c.center.map((v) => Math.round(v)).join(','), t: primary, r: c.region,
     ga: c.gsAnt, aa: c.airAnt, ph: c.pilotH,
   };
+  if (c.altRef === 'baro') p.ar = 'baro';
+  if (c.clearance !== 10) p.cl = c.clearance;
+  const model = encodeModel();
+  if (model) p.m = model;
   const drone = DRONE_BY_ID[c.drone];
   if (drone?.custom) p.dc = encodeDrone(drone);
   if (c.pattern === 'custom' && c.profile) p.fp = encodeProfile(c.profile);
   return Object.entries(p)
-    .map(([k, v]) => `${k}=${encodeURIComponent(v).replace(/%2C/gi, ',').replace(/%3B/gi, ';')}`)
+    .map(([k, v]) => `${k}=${encodeURIComponent(v).replace(/%2C/gi, ',').replace(/%3B/gi, ';').replace(/%3A/gi, ':')}`)
     .join('&');
 }
 
@@ -302,6 +312,7 @@ function setCfg(partial, restart = false) {
   } else {
     sim.configure(partial);
   }
+  if (flightEditor.isOpen && ('altRef' in partial || 'clearance' in partial)) flightEditor.render();
   syncControls();
   writeHash();
   dirty = true;
@@ -454,6 +465,16 @@ selPrimary.addEventListener('change', () => setPrimary(selPrimary.value));
 $('btn-play').addEventListener('click', togglePlay);
 $('btn-restart').addEventListener('click', restart);
 $('btn-free').addEventListener('click', () => pilot.toggle());
+for (const b of $('alt-ref').querySelectorAll('button')) b.addEventListener('click', () => setAltRef(b.dataset.ref));
+
+/** AGL (terrain following) or barometric (altitude above take-off, rising only where the ground closes in). */
+function setAltRef(ref) {
+  if (ref === state.cfg.altRef) return;
+  setCfg({ altRef: ref });
+  toast(ref === 'baro'
+    ? `Barometric: altitude above take-off; climbs only where the ground comes within ${state.cfg.clearance} m`
+    : 'AGL: height above the ground - the drone follows the terrain');
+}
 
 function togglePlay() {
   state.playing = !state.playing;
@@ -498,6 +519,11 @@ function syncControls() {
   $('out-speed').textContent = own ? ownText : `${flown.toFixed(flown < 10 ? 1 : 0)} m/s${c.pattern === 'climb' && canHover(d) ? ' ↕' : ''}`;
   rngHeight.value = String(heightToSlider(c.height));
   $('out-height').textContent = own ? ownText : `${c.height < 10 ? c.height.toFixed(1) : Math.round(c.height)} m`;
+  const baro = c.altRef === 'baro';
+  $('lbl-height').textContent = baro ? 'Altitude (baro)' : 'Height AGL';
+  $('ctl-height').title = baro ? `Altitude above the take-off point; the drone rises where the ground comes within ${c.clearance} m` : 'Height above the ground below the drone';
+  for (const b of $('alt-ref').querySelectorAll('button')) b.setAttribute('aria-pressed', String(b.dataset.ref === c.altRef));
+  for (const b of chips.querySelectorAll('button')) b.title = `${b.textContent} m above ${baro ? 'the take-off point' : 'ground'}`;
   rngSize.value = String(c.size);
   $('out-size').textContent = fmtDist(c.size);
   $('lbl-size').textContent = pat.size || 'Size';
@@ -667,6 +693,8 @@ const SETTINGS = [
   { group: 'Flight' },
   { key: 'cfg.heading', type: 'range', label: 'Pattern heading', min: 0, max: 355, step: 5, fmt: (v) => `${v}°` },
   { key: 'cfg.avoid', type: 'check', label: 'Climb over buildings & tree crowns' },
+  { key: 'cfg.altRef', type: 'select', label: 'Height reference', options: [['agl', 'AGL: follow the terrain'], ['baro', 'Barometric: hold altitude']] },
+  { key: 'cfg.clearance', type: 'range', label: 'Barometric: min. ground clearance', min: 1, max: 60, step: 1, fmt: (v) => `${v} m` },
   { group: 'Radio model' },
   { key: 'cfg.pilotH', type: 'range', label: 'Pilot antenna height', min: 1, max: 15, step: 0.5, fmt: (v) => `${v} m` },
   { key: 'cfg.interference', type: 'check', label: 'Interference (neighbour cells, band noise)' },
@@ -731,6 +759,25 @@ function buildSettings() {
     body.append(row);
     settingInputs.push({ s, input });
   }
+  modelPanel = new ModelPanel(body, {
+    onChange: () => {
+      writeHash();
+      syncModelBadge();
+      updatePanel();
+      updateTable();
+      dirty = true;
+    },
+    currentEnv: () => sim.geo[TECHS[primaryIdx()].node].env,
+  });
+}
+
+/** The settings button and the influences card show when the model is not the default one. */
+function syncModelBadge() {
+  const n = modelChanges().length;
+  const btn = $('btn-settings');
+  btn.classList.toggle('is-tuned', n > 0);
+  btn.title = n ? `Display & model settings (S) - ${n} model parameter${n > 1 ? 's' : ''} changed` : 'Display & model settings (S)';
+  $('btn-model').textContent = n ? `Model (${n} changed)…` : 'Model…';
 }
 
 function syncSettings() {
@@ -741,8 +788,10 @@ function syncSettings() {
     else input.value = String(v);
     if (s.out) s.out.textContent = s.fmt ? s.fmt(+v) : String(v);
   }
+  if (modelPanel) modelPanel.sync();
 }
 buildSettings();
+syncModelBadge();
 
 // the drawer opens below the top bar so its buttons stay reachable
 const topbar = document.querySelector('.topbar');
@@ -752,8 +801,16 @@ new ResizeObserver(() => document.documentElement.style.setProperty('--top', `${
 function toggleDrawer(open = $('settings').hidden) {
   if (open) closeDrawers('settings');
   $('settings').hidden = !open;
+  if (open) modelPanel.sync(true);
   syncDrawerButtons();
 }
+/** Opens the settings at the model parameters, on the environment the selected link sees. */
+function openModel() {
+  toggleDrawer(true);
+  modelPanel.sync(true);
+  document.querySelector('.set-group--model').scrollIntoView({ block: 'start' });
+}
+$('btn-model').addEventListener('click', openModel);
 function closeDrawers(except) {
   if (except !== 'settings') $('settings').hidden = true;
   if (except !== 'flight' && flightEditor.isOpen) flightEditor.close();
@@ -789,7 +846,8 @@ function buildHelp() {
     ['Space', 'play / pause'], ['R', 'restart the flight (clears the track)'], ['1 … 6', 'scenarios'],
     ['[  ]', 'height down / up'], ['−  =', 'speed down / up'], [',  .', 'time warp slower / faster'],
     ['↑  ↓', 'previous / next technology'], ['C', 'cycle camera: orbit, follow, chase, top, pilot, FPV'], ['F  T  P', 'follow / top / pilot view'],
-    ['L', 'log ↔ linear height scale'], ['S', 'settings'], ['?', 'this help'], ['Esc', 'close / cancel'],
+    ['L', 'log ↔ linear height scale'], ['B', 'height reference: AGL (follow the terrain) ↔ barometric (hold altitude)'],
+    ['S', 'settings & model parameters'], ['?', 'this help'], ['Esc', 'close / cancel'],
     ['Mouse', 'drag: orbit · right-drag or Shift: pan · wheel: zoom · double-click: look there'],
     ['E', 'flight profiles: place waypoints on the map (click adds, drag moves, right-click deletes)'], ['Del', 'delete the selected waypoint'],
     ['G', 'free flight on / off'],
@@ -833,8 +891,13 @@ function buildHelp() {
   b.append(
     h('Flight profiles, drones & free flight'),
     p('Flight profiles (✎ next to the pattern) are waypoint plans: each waypoint has a height above ground, the speed of the leg that starts there and an optional hold. At the end the drone loops, flies back and forth or stops. Switch on "Edit on map" (E), then click on the ground to add waypoints, drag them, right-click to delete; Top view (T) is easiest. Corners are flown with the turn radius the airframe needs; fixed wings cannot hold. Profiles are stored in this browser and travel as JSON files or inside a link. A pattern or a free flight can be turned into a profile.'),
+    p('Height reference (AGL / Baro in the top bar, B): with AGL the heights are above the ground below the drone, so it follows the terrain. Barometric heights are altitudes above the take-off point (the pilot), held like a barometer does: the drone keeps its altitude over valleys and only rises where the ground - with "Climb over buildings & tree crowns" also a roof or a canopy - comes closer than the clearance (Settings → Flight), starting the climb early enough for its climb rate. It applies to patterns, flight profiles and free flight; the HUD then shows the altitude and the height above ground.'),
     p('Drone profiles (✎ next to the drone): duplicate a built-in airframe to edit speeds, climb rate, acceleration, tilt or bank limits, size and the on-board antenna. The editor shows what follows: turn radius, stopping distance, maximum Doppler shift.'),
     p('Free flight (G) hands you the sticks: keyboard in Mode-2 layout, a game pad, or an RC transmitter connected by USB as a joystick (AETR or TAER channel order). Multirotors fly like a GPS drone in position mode; fixed wings fly coordinated turns and cannot stall. Ground and buildings are solid. Return home (H) climbs over obstacles, flies back and lands next to the pilot. With "failsafe RTH" on, the drone stops hearing your sticks and returns home when the chosen control link loses more than 90 % of its packets for a second - the simulated link, not a timer. The FPV camera rides on the airframe.'),
+  );
+  b.append(
+    h('Tuning the model'),
+    p('Settings → Model parameters (or "Model…" in the Influences card) exposes the knobs: canopy density and trunk-zone weight, foliage attenuation and its saturation, terrain and rooftop diffraction, whether street canyons cap the building loss, ground reflection strength and roughness, unlicensed-band noise - and per environment class the scattering (Rician K at low and high elevation), delay spread, shadowing σ and decorrelation, moving scatterers and noise rise. Everything acts at once; changed values are marked and can be reset one by one, and the link carries them.'),
   );
   b.append(h('Reading the verdict'), p('Each technology is judged from the last 5 s of samples: the 10 % SINR point against its most robust mode, the packet error rate, and the data rate it needs (video, telemetry, C2). Reasons list what limits it - blockage, interference, Doppler, delay spread or fading. Tx powers follow EU (ETSI) or US (FCC) practice and are assumptions, not certifications.'));
 }
@@ -871,6 +934,7 @@ window.addEventListener('keydown', (e) => {
   else if (k === '-') setCfg({ speed: Math.max(DRONE_BY_ID[c.drone].vMin || 0, c.speed - 1) });
   else if (k === '=' || k === '+') setCfg({ speed: Math.min(DRONE_BY_ID[c.drone].vMax, c.speed + 1) });
   else if (k === 'g' || k === 'G') pilot.toggle();
+  else if (k === 'b' || k === 'B') setAltRef(c.altRef === 'baro' ? 'agl' : 'baro');
   else if (k === 'e' || k === 'E') {
     if (!flightEditor.isOpen) flightEditor.open();
     flightEditor.setMapEdit(!flightEditor.mapEdit);
@@ -1087,7 +1151,8 @@ function updateHud() {
   const t = sim.t;
   hudItems.t.textContent = `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}${state.warp !== 1 ? ` ×${state.warp}` : ''}`;
   hudItems.dist.textContent = `${fmtDist(g.d3 || 0)} to ${tech.node === 'cell' ? 'cell' : 'pilot'}`;
-  hudItems.agl.textContent = `${d.agl < 10 ? d.agl.toFixed(1) : Math.round(d.agl)} m AGL`;
+  const aglText = `${d.agl < 10 ? d.agl.toFixed(1) : Math.round(d.agl)} m AGL`;
+  hudItems.agl.textContent = state.cfg.altRef === 'baro' ? `${Math.round(d.y - sim.homeElev)} m alt · ${aglText}` : aglText;
   hudItems.v.textContent = `${d.speed.toFixed(1)} m/s`;
   hudItems.elev.textContent = `${num(g.elev ?? 0, 1)}°`;
   hudItems.env.textContent = ENVS[g.env]?.name || '–';

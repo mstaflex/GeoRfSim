@@ -250,7 +250,7 @@ export class PilotUI {
     const mid = el('div', 'osd__mid');
     this.read = {};
     const row1 = el('div', 'osd__row');
-    for (const [k, label] of [['alt', 'ALT'], ['vs', 'VS'], ['spd', 'SPD'], ['hdg', 'HDG'], ['home', 'HOME']]) {
+    for (const [k, label] of [['alt', 'ALT'], ['agl', 'AGL'], ['vs', 'VS'], ['spd', 'SPD'], ['hdg', 'HDG'], ['home', 'HOME']]) {
       const s = el('span', 'osd__val');
       s.append(el('small', '', label));
       const b = el('b', '', '–');
@@ -383,7 +383,13 @@ export class PilotUI {
     const dx = p.x - d.x;
     const dz = p.z - d.z;
     const dist = Math.hypot(dx, dz);
-    this.read.alt.textContent = `${d.agl < 10 ? d.agl.toFixed(1) : Math.round(d.agl)} m`;
+    // ALT above the take-off point (what a barometer shows), AGL above the ground below
+    const alt = d.y - sim.homeElev;
+    this.read.alt.textContent = `${Math.abs(alt) < 10 ? alt.toFixed(1) : Math.round(alt)} m`;
+    this.read.agl.textContent = `${d.agl < 10 ? d.agl.toFixed(1) : Math.round(d.agl)} m`;
+    const baro = app.state.cfg.altRef === 'baro';
+    this.read.alt.parentElement.title = 'Altitude above the take-off point (barometric)';
+    this.read.agl.parentElement.title = baro ? 'Height above the ground below; altitude hold is barometric' : 'Height above the ground below; altitude hold follows the terrain';
     this.read.vs.textContent = `${d.vy >= 0 ? '+' : '−'}${Math.abs(d.vy).toFixed(1)}`;
     this.read.spd.textContent = `${Math.hypot(d.vx, d.vz).toFixed(1)} m/s`;
     const hdg = ((d.heading * 180) / Math.PI + 90 + 360) % 360;

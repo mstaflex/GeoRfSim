@@ -35,9 +35,16 @@
     <input type="range" id="rng-speed" min="0" max="40" step="0.5">
   </div>
   <div class="ctl ctl--range" id="ctl-height">
-    <label for="rng-height">Height AGL <output id="out-height"></output></label>
+    <label for="rng-height"><span id="lbl-height">Height AGL</span> <output id="out-height"></output></label>
     <input type="range" id="rng-height" min="0" max="1000" step="1">
     <div class="chips" id="height-chips" role="group" aria-label="Height presets"></div>
+  </div>
+  <div class="ctl ctl--ref">
+    <span class="ctl__label" id="lbl-altref">Height ref.</span>
+    <div class="seg seg--small" id="alt-ref" role="group" aria-labelledby="lbl-altref">
+      <button type="button" data-ref="agl" aria-pressed="true" title="AGL: heights above the ground below the drone - it follows the terrain (B)">AGL</button>
+      <button type="button" data-ref="baro" aria-pressed="false" title="Barometric: altitude above the take-off point - the drone only rises where the ground comes closer than the clearance (B)">Baro</button>
+    </div>
   </div>
   <div class="ctl ctl--range" id="ctl-size">
     <label for="rng-size"><span id="lbl-size">Size</span> <output id="out-size"></output></label>
@@ -92,7 +99,7 @@
     <section class="card">
       <div class="card__head">
         <h2>Influences</h2>
-        <span class="card__hint">dB vs. free space, now</span>
+        <span class="card__hint">dB vs. free space, now <button type="button" class="btn btn--mini" id="btn-model" title="Tune the model: canopy density, scattering per environment, diffraction, ground reflection, noise">Model…</button></span>
       </div>
       <div class="budget" id="budget"></div>
       <div class="infl" id="influences"></div>

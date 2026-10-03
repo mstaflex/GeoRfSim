@@ -18,7 +18,7 @@ import {
   ANTENNAS, axesFromAzTilt, gainWorld, sectorGain, mountAxes, branchesOf, polOf, polLoss, reflectionPol,
 } from './rf/antennas.js';
 import {
-  ENVS, fspl, knifeEdge, vegetationLoss, groundReflection, roughnessFactor, kFactorDb, delaySpread,
+  ENVS, MODEL, fspl, knifeEdge, vegetationLoss, groundReflection, roughnessFactor, kFactorDb, delaySpread,
   shadowSigma, gasAttenuation, gpp, alHourani,
 } from './rf/models.js';
 import { FadingProcess, estimateK } from './rf/fading.js';
@@ -47,6 +47,8 @@ export const DEFAULT_CFG = {
   heading: 0,
   center: [0, 0],
   avoid: true,
+  altRef: 'agl', // height reference: 'agl' (terrain following) or 'baro' (altitude above take-off)
+  clearance: 10, // barometric: rise only where the ground comes closer than this (m)
   region: 'eu',
   gsAnt: 'auto',
   airAnt: 'auto',
@@ -167,13 +169,19 @@ export class Simulation {
   configure(partial) {
     const prev = this.cfg;
     this.cfg = { ...prev, ...partial };
-    const pathKeys = ['drone', 'pattern', 'speed', 'height', 'size', 'heading', 'center', 'avoid', 'profile'];
+    const pathKeys = ['drone', 'pattern', 'speed', 'height', 'size', 'heading', 'center', 'avoid', 'profile', 'altRef', 'clearance'];
     if (pathKeys.some((k) => k in partial && JSON.stringify(partial[k]) !== JSON.stringify(prev[k]))) this.rebuild();
     else this.#aimAntennas();
   }
 
   get drone() {
     return DRONE_BY_ID[this.cfg.drone];
+  }
+
+  /** Ground elevation at the take-off point (the pilot): zero of the barometric altitude. */
+  get homeElev() {
+    const p = this.world.pilot;
+    return this.world.elevAt(p.x, p.z);
   }
 
   /** Speed actually flown (clamped to the airframe's envelope). */
@@ -231,6 +239,7 @@ export class Simulation {
     this.lastHeading = 0;
     this.att = { pitch: 0, roll: 0 };
     this.aglCur = undefined;
+    this.yCur = undefined;
     this.vCur = undefined;
     this.holdIdx = 0;
     this.holdLeft = 0;
@@ -261,8 +270,9 @@ export class Simulation {
     this.prevDr = { ...this.dr };
     this.t += h;
     if (this.free) {
-      const inp = this.rth ? rthInput(this.free, this.drone, this.rth.home, this.world, this.rth) : this.input;
-      const ev = freeStep(this.free, inp, this.drone, this.world, h);
+      const opts = { altRef: this.cfg.altRef, clearance: this.cfg.clearance };
+      const inp = this.rth ? rthInput(this.free, this.drone, this.rth.home, this.world, this.rth, opts) : this.input;
+      const ev = freeStep(this.free, inp, this.drone, this.world, h, opts);
       if (ev.bump) this.events.push({ type: 'bump', t: this.t });
       this.lastInput = inp;
     } else this.#follow(h);
@@ -362,6 +372,7 @@ export class Simulation {
     this.rth = null;
     this.freeEndT = this.t;
     this.aglCur = d.agl;
+    this.yCur = d.y;
     const path = this.path;
     let best = 0;
     let bd = Infinity;
@@ -396,7 +407,8 @@ export class Simulation {
           break;
         }
       }
-      this.rth = { phase: 'climb', alt: Math.max(f.y - w.elevAt(f.x, f.z), 40), home };
+      // return altitude: at least 40 m above ground here (AGL) or above take-off (barometric)
+      this.rth = { phase: 'climb', alt: Math.max(f.y - w.elevAt(f.x, f.z), 40), yAlt: Math.max(f.y, this.homeElev + 40), home };
     }
   }
 
@@ -420,11 +432,19 @@ export class Simulation {
     let x = p.x;
     let z = p.z;
     let agl = p.agl;
-    // climb/descend towards a new height setpoint at the airframe's climb rate
-    if (this.aglCur === undefined) this.aglCur = agl;
-    else if (h > 0) {
-      const up = d.climb * 1.2 * h;
-      this.aglCur += clamp(agl - this.aglCur, -1.5 * up, up);
+    // climb/descend towards a new height setpoint at the airframe's climb rate - in heights above
+    // ground when following the terrain, in altitude when holding a barometric altitude
+    const e0 = this.world.elevAt(x, z);
+    const up = d.climb * 1.2 * h;
+    if (this.cfg.altRef === 'baro') {
+      if (this.yCur === undefined) this.yCur = e0 + agl;
+      else if (h > 0) this.yCur += clamp(e0 + agl - this.yCur, -1.5 * up, up);
+      this.yCur = Math.max(this.yCur, e0 + 0.3);
+      this.aglCur = this.yCur - e0;
+    } else {
+      if (this.aglCur === undefined) this.aglCur = agl;
+      else if (h > 0) this.aglCur += clamp(agl - this.aglCur, -1.5 * up, up);
+      this.yCur = e0 + this.aglCur;
     }
     agl = this.aglCur;
     if (this.path.hover || this.holdLeft > 0 || (this.path.open && this.s >= this.path.len)) {
@@ -478,6 +498,7 @@ export class Simulation {
     const e = this.world.elevAt(f.x, f.z);
     this.lastHeading = f.yaw;
     this.aglCur = f.y - e;
+    this.yCur = f.y;
     this.att = { pitch: f.pitch, roll: f.roll };
     this.dr = {
       x: f.x,
@@ -669,11 +690,12 @@ export class Simulation {
     const lFs = fspl(g.d3, f);
     const nuT = g.prof.kT * Math.sqrt(2 / lambda);
     const nuB = g.prof.kB * Math.sqrt(2 / lambda);
-    const lT = knifeEdge(nuT);
+    const lT = knifeEdge(nuT) * MODEL.terrain;
     const hBs = g.node.h;
     const ref3 = gpp(this.world.cellSite.model || 'UMa', g.d2, Math.max(hBs, 1.5), d.agl, f);
-    const lBraw = knifeEdge(nuB);
-    const lB = lBraw > 0 ? Math.min(lBraw, Math.max(6, ref3.plNlos - lFs)) : 0;
+    const lBraw = knifeEdge(nuB) * MODEL.buildings;
+    // street-canyon multipath: the loss behind buildings does not exceed the 3GPP NLOS excess
+    const lB = lBraw > 0 && MODEL.nlosCap ? Math.min(lBraw, Math.max(6, ref3.plNlos - lFs)) : lBraw;
     const lV = vegetationLoss(f, g.prof.vegDepth);
     const lGas = (gasAttenuation(f) * g.d3) / 1000;
     let state = STATE.LOS;
@@ -700,7 +722,10 @@ export class Simulation {
       const pol = reflectionPol(gsPol, branches[0].pol);
       const [rr, ri] = groundReflection(refl.psi, f, refl.surface.epsR, refl.surface.sigma, pol);
       const rho = roughnessFactor(refl.psi, f, refl.surface.rough) * refl.surface.factor * (obstructed || state === STATE.VEG ? 0.3 : 1);
-      const amp = rho * refl.ratio * Math.pow(10, (gGsRef - gGs + branches[0].gRef - branches[0].g) / 20);
+      // tuned strength, but the reflection coefficient never exceeds 1
+      const mag = Math.hypot(rr, ri) * rho;
+      const scale = mag > 0 ? Math.min(MODEL.reflection, 1 / mag) : 0;
+      const amp = rho * scale * refl.ratio * Math.pow(10, (gGsRef - gGs + branches[0].gRef - branches[0].g) / 20);
       gr = rr * amp;
       gi = ri * amp;
     }
@@ -713,7 +738,7 @@ export class Simulation {
       const envRx = rxAir ? g.envDrone : g.envNode;
       const hRx = rxAir ? d.agl : g.node.h;
       const [r0, r1] = ENVS[envRx].ism;
-      rise = (r0 + r1 * Math.log10(Math.max(1, hRx / 10))) * ISM_FACTOR[tech.ism];
+      rise = (r0 + r1 * Math.log10(Math.max(1, hRx / 10))) * ISM_FACTOR[tech.ism] * MODEL.ismRise;
     }
     const nLin = Math.pow(10, (nDbm + rise) / 10);
     let iLin = 0;
@@ -740,8 +765,7 @@ export class Simulation {
 
     // Doppler and delay spread
     const fLos = -g.vRad / lambda;
-    const envMin = g.env === 'forest' ? 3 : g.env === 'urban' || g.env === 'dense' ? 1 : 0.3;
-    const fdMax = d.speed / lambda + envMin;
+    const fdMax = d.speed / lambda + ENVS[g.env].fdEnv;
     const ds = delaySpread(g.env, obstructed, d.agl, g.clutterDrone) * (airAnt.narrowBeam || gsAnt.narrowBeam ? 0.3 : 1);
     const bc = 1 / (5 * ds);
     const L = clamp(Math.round(tech.bw / bc), 1, SUBBANDS);
