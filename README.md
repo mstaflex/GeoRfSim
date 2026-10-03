@@ -41,14 +41,21 @@ Tests (Node ≥ 20, no packages to install):
 
 ```bash
 npm test                          # = node --test tests/*.test.js
-npm run lint                      # ESLint (fetched by npx)
+```
+
+Lint and the browser smoke test need two development tools, installed with a
+supply-chain cooldown (see below):
+
+```bash
+npm run tools                     # ESLint + playwright-core, versions ≥ 28 days old
+npm run lint
 ```
 
 ## GitHub Pages and CI
 
 `.github/workflows/pages.yml` runs on every push and pull request:
 
-1. **Unit tests & lint** (`npm test`, `npm run lint`).
+1. **Unit tests & lint** (`npm test`, `npm run tools`, `npm run lint`).
 2. **Build & smoke test.** `npm run build` writes the site to `_site/`. It is
    `app/` unchanged, plus a version stamp (commit, shown at the bottom of the
    help) and `?v=<commit>` on every module, stylesheet and script URL. GitHub
@@ -73,9 +80,19 @@ To run the build and the smoke test locally:
 
 ```bash
 npm run build
-npm install --no-save playwright-core && npm run smoke   # uses Chrome/Chromium, or CHROME_PATH
-python3 -m http.server 8000 --directory _site            # look at the built site
+npm run tools && npm run smoke                 # uses Chrome/Chromium, or CHROME_PATH
+python3 -m http.server 8000 --directory _site  # look at the built site
 ```
+
+**npm supply-chain cooldown.** The app itself has no npm dependencies. The
+development tools (ESLint, playwright-core and the about 80 packages they pull
+in) are installed only through `npm run tools` (`scripts/install-tools.mjs`).
+It runs `npm install --before=<now − 28 days>`, so npm picks for every package
+in the tree the newest version that has been public for at least four weeks,
+never a release from the last days. A hijacked release is usually spotted and
+pulled within days. The script then checks every installed package's publish
+date against the registry and fails if anything is younger. CI uses the same
+script. `COOLDOWN_DAYS` can lengthen the delay, not shorten it.
 
 ## Using it
 

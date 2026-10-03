@@ -7,8 +7,8 @@
  * console errors or CSP violations, and saves a screenshot (smoke.png).
  *
  * Usage: node scripts/smoke.mjs [siteDir]   (default: _site)
- * Needs playwright-core (npm install --no-save playwright-core) and Chrome or
- * Chromium: CHROME_PATH, else the usual install locations, else Playwright's.
+ * Needs playwright-core (npm run tools) and Chrome or Chromium: CHROME_PATH,
+ * else the usual install locations, else Playwright's own.
  */
 import fs from 'node:fs';
 import http from 'node:http';
