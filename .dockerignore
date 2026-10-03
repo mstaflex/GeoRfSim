@@ -1,6 +1,12 @@
 .git
+.github
 .gitignore
 README.md
+docs
+scripts
 tests
+_site
+smoke.png
 package.json
+eslint.config.mjs
 node_modules

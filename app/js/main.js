@@ -11,6 +11,7 @@ import { DroneEditor } from './ui/drone-editor.js';
 import { PilotUI } from './ui/pilot.js';
 import { ModelPanel } from './ui/model-panel.js';
 import { $, el } from './ui/dom.js';
+import { BUILD } from './version.js';
 import { TECHS } from './rf/tech.js';
 import {
   ANTENNAS, GROUND_ANTENNA_IDS, AIR_ANTENNA_IDS, axesFromAzTilt, gainWorld, gainLocal, airGainBody, sectorGain,
@@ -900,6 +901,7 @@ function buildHelp() {
     p('Settings → Model parameters (or "Model…" in the Influences card) exposes the knobs: canopy density and trunk-zone weight, foliage attenuation and its saturation, terrain and rooftop diffraction, whether street canyons cap the building loss, ground reflection strength and roughness, unlicensed-band noise - and per environment class the scattering (Rician K at low and high elevation), delay spread, shadowing σ and decorrelation, moving scatterers and noise rise. Everything acts at once; changed values are marked and can be reset one by one, and the link carries them.'),
   );
   b.append(h('Reading the verdict'), p('Each technology is judged from the last 5 s of samples: the 10 % SINR point against its most robust mode, the packet error rate, and the data rate it needs (video, telemetry, C2). Reasons list what limits it - blockage, interference, Doppler, delay spread or fading. Tx powers follow EU (ETSI) or US (FCC) practice and are assumptions, not certifications.'));
+  b.append(el('p', 'help__build', `GeoRfSim · build ${BUILD.version}${BUILD.date ? ` · ${BUILD.date}` : ''}`));
 }
 buildHelp();
 function toggleHelp(open = $('help').hidden) {

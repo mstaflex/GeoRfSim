@@ -1,0 +1,106 @@
+# Tests every push and pull request; builds the static site, smoke-tests it in
+# headless Chrome and, on the default branch, deploys it to GitHub Pages.
+#
+# One-time setup: Settings → Pages → Build and deployment → Source: "GitHub
+# Actions". Until then the deploy job is skipped with a warning.
+name: CI & GitHub Pages
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: Unit tests & lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Unit tests
+        run: npm test
+      - name: Lint
+        run: npm run lint
+
+  build:
+    name: Build site & smoke test
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: read
+    outputs:
+      deploy: ${{ steps.pages.outputs.ready }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Build the site
+        run: npm run build
+      - name: Smoke test in headless Chrome
+        run: |
+          npm install --no-save --no-package-lock --no-audit --no-fund playwright-core@1
+          npm run smoke
+      - name: Keep the smoke-test screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-screenshot
+          path: smoke.png
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Check that GitHub Pages deploys from Actions
+        id: pages
+        if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          type=$(gh api "repos/${GITHUB_REPOSITORY}/pages" --jq .build_type 2>/dev/null || true)
+          if [ "$type" = "workflow" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            msg="Not deployed: GitHub Pages is not enabled for this repository or not set to deploy from GitHub Actions. Settings → Pages → Build and deployment → Source: GitHub Actions, then run this workflow again. (Private repositories need GitHub Pro, Team or Enterprise for Pages.)"
+            echo "::warning title=GitHub Pages not set up::$msg"
+            echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload the site for GitHub Pages
+        if: steps.pages.outputs.ready == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    if: needs.build.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: github-pages
+      cancel-in-progress: false
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
+      - name: Summary
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: echo "Deployed to $PAGE_URL" >> "$GITHUB_STEP_SUMMARY"

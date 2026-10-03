@@ -584,6 +584,7 @@ input:disabled, select:disabled { opacity: .55; }
 .help table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
 .help td, .help th { padding: 3px 8px 3px 0; text-align: left; vertical-align: top; }
 .help th { color: var(--ink); font-weight: 500; white-space: nowrap; }
+.help__build { margin-top: 18px !important; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .help kbd {
   font: 11.5px ui-monospace, SFMono-Regular, Menlo, monospace;
   background: var(--surface-2);

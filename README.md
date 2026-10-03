@@ -22,6 +22,9 @@ result into the signal distribution of the last 5 seconds.
 
 ## Starting it
 
+GeoRfSim is a static web app: `app/` is the whole thing. Serve it from
+anywhere, e.g. GitHub Pages (below), or with Docker:
+
 ```bash
 docker compose up --build        # then open http://localhost:8080
 ```
@@ -38,6 +41,40 @@ Tests (Node ≥ 20, no packages to install):
 
 ```bash
 npm test                          # = node --test tests/*.test.js
+npm run lint                      # ESLint (fetched by npx)
+```
+
+## GitHub Pages and CI
+
+`.github/workflows/pages.yml` runs on every push and pull request:
+
+1. **Unit tests & lint** (`npm test`, `npm run lint`).
+2. **Build & smoke test.** `npm run build` writes the site to `_site/`. It is
+   `app/` unchanged, plus a version stamp (commit, shown at the bottom of the
+   help) and `?v=<commit>` on every module, stylesheet and script URL. GitHub
+   Pages lets browsers cache files for 10 minutes, and the version keeps a new
+   deployment from mixing with cached files of the old one. The build fails if
+   an import does not resolve, with exact upper/lower case.
+   `npm run smoke` then loads the site in headless Chrome from a sub-path, as
+   Pages serves it, and runs it through scenarios, barometric height, the
+   settings, the flight-profile editor and free flight. Any page error,
+   console error or CSP violation fails the build. The screenshot is kept as
+   the `smoke-screenshot` artifact.
+3. **Deploy** to GitHub Pages, only on the default branch (also by hand:
+   *Actions → CI & GitHub Pages → Run workflow*).
+
+**One-time setup:** *Settings → Pages → Build and deployment → Source:
+GitHub Actions*. Until then the deploy job is skipped with a warning. The site
+appears at `https://<owner>.github.io/<repository>/`. Pages for a private
+repository needs GitHub Pro, Team or Enterprise, and the published site is
+public either way (except with Enterprise Cloud access control).
+
+To run the build and the smoke test locally:
+
+```bash
+npm run build
+npm install --no-save playwright-core && npm run smoke   # uses Chrome/Chromium, or CHROME_PATH
+python3 -m http.server 8000 --directory _site            # look at the built site
 ```
 
 ## Using it
@@ -366,6 +403,8 @@ app/
     ui/            flight-editor.js, drone-editor.js, pilot.js (free-flight input & OSD), model-panel.js, dom.js
 tests/             node:test unit tests (models, antennas, fading, worlds, simulation, profiles, free flight,
                    height reference, model parameters)
+scripts/           build-site.mjs (static build for Pages), smoke.mjs (headless-Chrome smoke test)
+.github/workflows/ pages.yml: tests, lint, build, smoke test, deploy to GitHub Pages
 Dockerfile, nginx.conf, docker-compose.yml
 ```
 
@@ -392,6 +431,12 @@ fields. Text is only ever inserted as text, never as HTML.
 | bound to `127.0.0.1`, memory and process limits | `docker-compose.yml` |
 | GET and HEAD only, everything else 405 | `nginx.conf` |
 | strict CSP (`default-src 'none'`), `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy`, COOP/CORP | `nginx.conf` |
+| the same CSP and referrer policy as `<meta>` tags, for hosts that cannot send headers (GitHub Pages) | `app/index.html` |
 
 Rebuild regularly (`docker compose build --pull`) so nginx and Alpine patches
 arrive.
+
+On GitHub Pages the policy comes from the `<meta>` tag. Pages cannot send
+headers, so there is no `frame-ancestors` / `X-Frame-Options` there (other
+sites could embed the page; it has no accounts or actions to abuse) and no
+`Permissions-Policy`. Pages serves HTTPS, so clipboard links and game pads work.
