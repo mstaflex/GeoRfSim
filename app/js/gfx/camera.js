@@ -1,7 +1,7 @@
 /*
  * Camera: perspective modes (orbit / follow / chase / pilot / FPV) and
- * orthographic drawing views - top (map), iso (isometric) and side (an
- * elevation section across the link to the drone) - plus pointer and touch
+ * orthographic drawing views - top (map), iso (isometric) and side (a
+ * vertical section through the link and the flight) - plus pointer and touch
  * controls.
  */
 import { perspective, ortho, lookAt, multiply, invert, mat4 } from './mat.js';
@@ -14,8 +14,6 @@ const ISO_STEP = Math.PI / 2;
 const ISO_BASE = Math.PI / 4;
 /** In the side view everything closer than this (display units) in front of the section plane is cut away. */
 const SIDE_CUT = 25;
-
-const wrapAngle = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 
 export class OrbitCamera {
   constructor() {
@@ -37,10 +35,8 @@ export class OrbitCamera {
     this.isoYaw = -3 * ISO_BASE;
     this.isoTurning = false;
     this.track = true;
-    // side: framed automatically across the link until panned or turned
-    this.sideAuto = true;
+    // side: the direction of the section, set by frameSection
     this.sideYaw = 0;
-    this.sideZoom = 1;
   }
 
   get isOrtho() {
@@ -57,24 +53,39 @@ export class OrbitCamera {
     this.pitch = 0.62;
   }
 
-  /** Switches the mode; the iso view starts following the drone, the side view frames the link. */
+  /** Switches the mode; the iso view starts following the drone. */
   setMode(mode) {
     if (mode === 'iso' && this.mode !== 'iso') this.track = true;
-    if (mode === 'side') {
-      this.sideAuto = true;
-      this.sideZoom = 1;
-      this.sideSnap = true; // first frame: straight into position, then follow smoothly
-    }
     if (mode === 'chase') this.chaseEye = null;
     this.mode = mode;
   }
 
   /**
+   * Side view: frames a vertical section once - afterwards the view stands
+   * still like the top view, and the drone flies through it. `sec`, in display
+   * space: a = the link's node, u = the horizontal axis [x, z] (unit) drawn
+   * from left to right, s0..s1 = the extent along it from a, lo..hi = the
+   * height range, front = how far the content reaches towards the viewer (the
+   * cut stays in front of it), top / bottom = the parts of the view height
+   * covered by overlays.
+   */
+  frameSection(sec, aspect) {
+    const { a, u, s0, s1, lo, hi, front = 0 } = sec;
+    this.sideYaw = Math.atan2(u[0], -u[1]);
+    // the section goes into the band between the overlays (HUD at the top, minimap and legend at the bottom)
+    const top = clamp(sec.top || 0, 0, 0.25) + 0.07; // + the label above the drone
+    const bottom = clamp(sec.bottom || 0, 0, 0.45) + 0.04;
+    const halfW = (s1 - s0) * 0.54 + 40;
+    const halfH = Math.max(halfW / Math.max(aspect, 0.2), (hi - lo) / (2 * (1 - top - bottom)) + 20);
+    const s = (s0 + s1) / 2;
+    const off = [-u[1], u[0]]; // towards the viewer
+    this.target = [a[0] + u[0] * s + off[0] * front, (lo + hi) / 2 + halfH * (top - bottom), a[2] + u[1] * s + off[1] * front];
+    this.dist = clamp(halfH / Math.tan(this.fov / 2), this.minDist, this.maxDist);
+  }
+
+  /**
    * Computes the matrices. `ctx` supplies display positions: drone, heading,
-   * pilot (eye for the pilot view), body (FPV), and link = { a, b, lo, hi,
-   * top, bottom } for the side view: both ends of the link, the vertical
-   * extent of the terrain between them and the parts of the view (fractions
-   * of its height) covered by overlays at the top and at the bottom.
+   * pilot (eye for the pilot view) and body (FPV).
    */
   update(aspect, ctx, dt = 0) {
     const k = dt > 0 ? 1 - Math.exp(-dt / 0.18) : 1;
@@ -83,7 +94,7 @@ export class OrbitCamera {
       for (let i = 0; i < 3; i++) this.target[i] += (ctx.drone[i] - this.target[i]) * k;
     }
     if (ORTHO.has(mode)) {
-      this.#updateOrtho(aspect, ctx, dt);
+      this.#updateOrtho(aspect, dt);
       return;
     }
     let eye;
@@ -124,7 +135,7 @@ export class OrbitCamera {
     invert(this.invVP, this.vp);
   }
 
-  #updateOrtho(aspect, ctx, dt) {
+  #updateOrtho(aspect, dt) {
     const mode = this.mode;
     const k = dt > 0 ? 1 - Math.exp(-dt / 0.25) : 1;
     let pitch;
@@ -143,7 +154,6 @@ export class OrbitCamera {
       yaw = this.isoYaw;
     } else {
       pitch = 0;
-      if (this.sideAuto && ctx.link) this.#frameLink(aspect, ctx.link, k);
       yaw = this.sideYaw;
     }
     const halfH = this.dist * Math.tan(this.fov / 2);
@@ -159,29 +169,6 @@ export class OrbitCamera {
     lookAt(this.view, eye, t, up);
     multiply(this.vp, this.proj, this.view);
     invert(this.invVP, this.vp);
-  }
-
-  /** Side view: look across the link (node on the left, drone on the right) and fit both into the picture. */
-  #frameLink(aspect, link, kSmooth) {
-    const k = this.sideSnap ? 1 : kSmooth;
-    this.sideSnap = false;
-    const { a, b, lo, hi } = link;
-    const dx = b[0] - a[0];
-    const dz = b[2] - a[2];
-    const len = Math.hypot(dx, dz);
-    if (len > 5) {
-      const want = Math.atan2(dx / len, -dz / len);
-      this.sideYaw += wrapAngle(want - this.sideYaw) * k;
-    }
-    // the section goes into the band between the overlays (HUD at the top, minimap and legend at the bottom)
-    const top = clamp(link.top || 0, 0, 0.25) + 0.07; // + the label above the drone
-    const bottom = clamp(link.bottom || 0, 0, 0.45) + 0.04;
-    const halfW = len * 0.68 + 60;
-    const halfH = Math.max(halfW / aspect, (hi - lo) / (2 * (1 - top - bottom)) + 20) * this.sideZoom;
-    const want = [(a[0] + b[0]) / 2, (lo + hi) / 2 + halfH * (top - bottom), (a[2] + b[2]) / 2];
-    for (let i = 0; i < 3; i++) this.target[i] += (want[i] - this.target[i]) * k;
-    const dist = halfH / Math.tan(this.fov / 2);
-    this.dist += (dist - this.dist) * k;
   }
 
   orbit(dx, dy) {
@@ -202,7 +189,6 @@ export class OrbitCamera {
       this.isoTurning = true;
       this.isoYaw += dx * 0.006;
     } else if (this.mode === 'side') {
-      this.sideAuto = false;
       this.sideYaw += dx * 0.006;
     } else this.pan(dx, dy, viewH);
   }
@@ -226,7 +212,6 @@ export class OrbitCamera {
         for (const i of [0, 2]) this.target[i] += -right[i] * dx * s + (up[i] / h) * dy * s * f;
         return;
       }
-      if (this.mode === 'side') this.sideAuto = false;
       for (let i = 0; i < 3; i++) this.target[i] += -right[i] * dx * s + up[i] * dy * s;
       return;
     }
@@ -238,15 +223,13 @@ export class OrbitCamera {
   }
 
   zoom(factor) {
-    if (this.mode === 'side' && this.sideAuto) this.sideZoom = clamp(this.sideZoom * factor, 0.05, 20);
-    else this.dist = clamp(this.dist * factor, this.minDist, this.maxDist);
+    this.dist = clamp(this.dist * factor, this.minDist, this.maxDist);
   }
 
   /** Looks at a point (double-click, minimap): perspective modes switch to orbit, the drawing views stay. */
   lookAtPoint(p) {
     this.target = p.slice();
     if (this.mode === 'iso') this.track = false;
-    else if (this.mode === 'side') this.sideAuto = false;
     else if (!this.isOrtho) this.mode = 'orbit';
   }
 }

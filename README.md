@@ -107,7 +107,7 @@ Everything applies immediately. There are no "apply" buttons.
 | Play, pause, time warp | `Space`, `,` / `.` (×0.25 … ×20), `R` restarts and clears the track |
 | Camera | drag: orbit · right-drag or Shift: pan · wheel: zoom · double-click: look there |
 | Camera modes | Orbit, Follow, Chase, Top, Iso, Side, Pilot view, FPV (`C` cycles, `F` `T` `I` `V` `P`). Top, Iso and Side are orthographic drawing views: drag pans, right-drag turns Iso (it settles on a corner) and Side, wheel zooms |
-| Side view | a vertical section across the selected link: the node on the left, the drone on the right, the ground along the link as a line, everything in front of the section cut away. Heights are drawn linearly here, so the direct ray is a straight line and a constant altitude is level. It frames itself as the drone moves until you pan or turn it |
+| Side view | a vertical section through the selected link's node (pilot or cell site, on the left) and the whole flight, everything in front of it cut away. It stands still like the top view, and the drone flies through it; the ground under the direct ray is drawn as a line. Heights are drawn linearly here, so the direct ray is a straight line and a constant altitude is level. It is set up again for a new flight, scenario or node position; `V` fits it to the flight at any time |
 | Flight profiles | ✎ next to *Pattern*: waypoint plans drawn on the map (`E` toggles map editing). See below |
 | Drone profiles | ✎ next to *Drone*: your own airframes, based on a built-in one |
 | Free flight | *Free flight* button or `G`: fly with keyboard, game pad, RC transmitter or the on-screen sticks |

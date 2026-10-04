@@ -44,7 +44,7 @@ const CAMS = [
   ['chase', 'Chase', 'Behind the drone'],
   ['top', 'Top', 'Map from straight above, orthographic (T): drag pans'],
   ['iso', 'Iso', 'Isometric, orthographic (I): follows the drone; drag pans, right-drag turns to another corner'],
-  ['side', 'Side', 'Side view, orthographic (V): a vertical section across the link to the drone, framed automatically; drag pans, right-drag turns'],
+  ['side', 'Side', 'Side view, orthographic (V): a vertical section through the link and the whole flight that stands still; V again fits it; drag pans, right-drag turns'],
   ['pilot', 'Pilot view', 'From the pilot to the drone (P)'],
   ['fpv', 'FPV', 'Camera on the drone'],
 ];
@@ -306,6 +306,7 @@ function loadScenario(id, { defaults = true } = {}) {
   cam.mode = state.camMode;
   refreshPatterns();
   if (flightEditor.isOpen) flightEditor.render();
+  if (cam.mode === 'side') frameSide();
   syncControls();
   writeHash();
   dirty = true;
@@ -318,6 +319,7 @@ function setCfg(partial, restart = false) {
     sim.cfg = { ...sim.cfg, ...state.cfg };
     sim.reset();
     sim.rebuild();
+    if (cam.mode === 'side') frameSide();
   } else {
     sim.configure(partial);
   }
@@ -502,7 +504,9 @@ function restart() {
   dirty = true;
 }
 function setPrimary(id) {
+  const node = TECHS[primaryIdx()].node;
   state.primary = id;
+  if (cam.mode === 'side' && TECHS[primaryIdx()].node !== node) frameSide();
   syncControls();
   writeHash();
   dirty = true;
@@ -591,6 +595,7 @@ function setCam(mode) {
     applyMapping();
     syncSettings();
   }
+  if (mode === 'side') frameSide();
   syncCamButtons();
   dirty = true;
 }
@@ -624,6 +629,7 @@ function placeAt(x, z) {
     sim.reset();
     sim.rebuild();
   }
+  if (what !== 'center' && cam.mode === 'side') frameSide();
   toast(`${PLACES.find((p) => p[0] === what)[1]} moved`);
   syncControls();
   writeHash();
@@ -874,7 +880,7 @@ function buildHelp() {
     ['Space', 'play / pause'], ['R', 'restart the flight (clears the track)'], ['1 … 6', 'scenarios'],
     ['[  ]', 'height down / up'], ['−  =', 'speed down / up'], [',  .', 'time warp slower / faster'],
     ['↑  ↓', 'previous / next technology'], ['C', 'cycle camera: orbit, follow, chase, top, iso, side, pilot, FPV'], ['F  T  P', 'follow / top / pilot view'],
-    ['I  V', 'isometric view / side view (orthographic; drag pans, right-drag turns)'],
+    ['I  V', 'isometric view / side view (orthographic; drag pans, right-drag turns; V again fits the side view to the flight)'],
     ['L', 'log ↔ linear height scale'], ['B', 'height reference: AGL (follow the terrain) ↔ barometric (hold altitude)'],
     ['S', 'settings & model parameters'], ['?', 'this help'], ['Esc', 'close / cancel'],
     ['Mouse', 'drag: orbit · right-drag or Shift: pan · wheel: zoom · double-click: look there'],
@@ -920,7 +926,7 @@ function buildHelp() {
   b.append(
     h('Flight profiles, drones & free flight'),
     p('Flight profiles (✎ next to the pattern) are waypoint plans: each waypoint has a height above ground, the speed of the leg that starts there and an optional hold. At the end the drone loops, flies back and forth or stops. Switch on "Edit on map" (E), then click on the ground to add waypoints, drag them, right-click to delete; Top view (T) is easiest. Corners are flown with the turn radius the airframe needs; fixed wings cannot hold. Profiles are stored in this browser and travel as JSON files or inside a link. A pattern or a free flight can be turned into a profile.'),
-    p('Height reference (AGL / Baro in the top bar, B): with AGL the heights are above the ground below the drone, so it follows the terrain. Barometric heights are altitudes above the take-off point (the pilot), held like a barometer does: the drone keeps its altitude over valleys and only rises where the ground - with "Climb over buildings & tree crowns" also a roof or a canopy - comes closer than the clearance (Settings → Flight), starting the climb early enough for its climb rate - for a ridge higher than the altitude a slow climber starts up well before it. A constant altitude is drawn level. It applies to patterns, flight profiles and free flight; the HUD then shows the altitude and the height above ground. The Side view (V) shows it best: a section across the link with the ground along it.'),
+    p('Height reference (AGL / Baro in the top bar, B): with AGL the heights are above the ground below the drone, so it follows the terrain. Barometric heights are altitudes above the take-off point (the pilot), held like a barometer does: the drone keeps its altitude over valleys and only rises where the ground - with "Climb over buildings & tree crowns" also a roof or a canopy - comes closer than the clearance (Settings → Flight), starting the climb early enough for its climb rate - for a ridge higher than the altitude a slow climber starts up well before it. A constant altitude is drawn level. It applies to patterns, flight profiles and free flight; the HUD then shows the altitude and the height above ground. The Side view (V) shows it best: a fixed section through the pilot and the whole flight, with the ground under the direct ray.'),
     p('Drone profiles (✎ next to the drone): duplicate a built-in airframe to edit speeds, climb rate, acceleration, tilt or bank limits, size and the on-board antenna. The editor shows what follows: turn radius, stopping distance, maximum Doppler shift.'),
     p('Free flight (G) hands you the sticks: keyboard in Mode-2 layout, a game pad, or an RC transmitter connected by USB as a joystick (AETR or TAER channel order). Multirotors fly like a GPS drone in position mode; fixed wings fly coordinated turns and cannot stall. Ground and buildings are solid. Return home (H) climbs over obstacles, flies back and lands next to the pilot. With "failsafe RTH" on, the drone stops hearing your sticks and returns home when the chosen control link loses more than 90 % of its packets for a second - the simulated link, not a timer. The FPV camera rides on the airframe.'),
   );
@@ -1053,38 +1059,80 @@ const hudCover = { top: 0, bottom: 0 };
   for (const e of [vp, ...huds]) ro.observe(e);
 }
 
-/**
- * The selected link for the side view: both ends in display space, the
- * ground along it (drawn as the section line), its height range and the
- * overlays to keep clear of.
- */
-function linkGeometry() {
-  const g = sim.geo[TECHS[primaryIdx()].node];
-  const n = g.node;
+/** The ground along the selected link, drawn in the side view: the terrain under the direct ray. */
+function linkGround() {
+  const n = sim.geo[TECHS[primaryIdx()].node].node;
   const d = sim.dr;
   if (!n || !d) return null;
-  const w = sim.world;
-  const a = renderer.display(n.x, n.z, n.e, n.h);
-  const b = renderer.display(d.x, d.z, d.e, d.agl);
-  let lo = Math.min(a[1], b[1]);
-  let hi = Math.max(a[1], b[1]);
   const ground = [];
   for (let i = 0; i <= 64; i++) {
     const t = i / 64;
     const x = n.x + (d.x - n.x) * t;
     const z = n.z + (d.z - n.z) * t;
+    ground.push([x, z, sim.world.elevAt(x, z)]);
+  }
+  return ground;
+}
+
+/**
+ * What the side view shows: a section through the selected link's node and
+ * the whole flight path (in free flight: the drone), seen across the line
+ * from the node to the farthest point of it. See OrbitCamera.frameSection.
+ */
+function sectionGeometry() {
+  const n = sim.geo[TECHS[primaryIdx()].node].node;
+  const d = sim.dr;
+  if (!n || !d) return null;
+  const w = sim.world;
+  const path = sim.path;
+  const pts = [[d.x, d.z, d.agl]];
+  if (!sim.free && path?.len > 0) for (let i = 0; i < path.x.length; i++) pts.push([path.x[i], path.z[i], path.agl[i]]);
+  let far = 0;
+  let u = null;
+  for (const [x, z] of pts) {
+    const r = Math.hypot(x - n.x, z - n.z);
+    if (r > far) {
+      far = r;
+      u = [(x - n.x) / r, (z - n.z) / r];
+    }
+  }
+  if (far < 20) u = [Math.sin(cam.sideYaw), -Math.cos(cam.sideYaw)]; // all next to the node: keep the direction
+  const a = renderer.display(n.x, n.z, n.e, n.h);
+  let s0 = 0;
+  let s1 = 0;
+  let front = 0;
+  let lo = a[1];
+  let hi = a[1];
+  for (const [x, z, agl] of pts) {
+    const s = (x - n.x) * u[0] + (z - n.z) * u[1];
+    s0 = Math.min(s0, s);
+    s1 = Math.max(s1, s);
+    front = Math.max(front, (z - n.z) * u[0] - (x - n.x) * u[1]);
     const e = w.elevAt(x, z);
-    const y = renderer.display(x, z, e, 0)[1];
+    hi = Math.max(hi, renderer.display(x, z, e, agl)[1]);
+    lo = Math.min(lo, renderer.display(x, z, e, 0)[1]);
+  }
+  for (let i = 0; i <= 64; i++) {
+    const s = s0 + ((s1 - s0) * i) / 64;
+    const x = n.x + u[0] * s;
+    const z = n.z + u[1] * s;
+    const y = renderer.display(x, z, w.elevAt(x, z), 0)[1];
     lo = Math.min(lo, y);
     hi = Math.max(hi, y);
-    ground.push([x, z, e]);
   }
-  return { a, b, lo, hi, ground, ...hudCover };
+  return { a, u, s0, s1, lo, hi, front, ...hudCover };
+}
+
+/** Sets the side view up for the current link and flight; then it stands still (like the top view). */
+function frameSide() {
+  const sec = sectionGeometry();
+  if (sec) cam.frameSection(sec, canvas.clientWidth / Math.max(canvas.clientHeight, 1));
+  dirty = true;
 }
 
 const SECTION = [0.98, 0.86, 0.55, 0.95];
 
-function updateRays(link = null) {
+function updateRays(ground = null) {
   const lay = state.view.layers;
   const tech = TECHS[primaryIdx()];
   const g = sim.geo[tech.node];
@@ -1114,7 +1162,7 @@ function updateRays(link = null) {
     lines.push(pts);
   }
   // side view: the ground along the link, so the section shows the terrain under the ray
-  if (link) lines.push(link.ground.map(([x, z, e]) => [x, z, e, 0.4, SECTION]));
+  if (ground) lines.push(ground.map(([x, z, e]) => [x, z, e, 0.4, SECTION]));
   // the drone's own drop line: reads its 3-D position against the ground (not from the drone's own camera)
   const de = w.elevAt(d.x, d.z);
   const white = [1, 1, 1, 0.85];
@@ -1615,8 +1663,7 @@ function frame(now) {
   const airframe = DRONE_BY_ID[state.cfg.drone];
   if (state.playing || dirty || cam.mode !== 'orbit') {
     renderer.syncTrack(sim.track, colorOf, colorKey());
-    const link = cam.mode === 'side' ? linkGeometry() : null;
-    updateRays(link);
+    updateRays(cam.mode === 'side' ? linkGround() : null);
     // waypoint plan and markers while the flight-profile editor is open
     const ov = flightEditor.overlay();
     const plan = ov.plan.length ? ov.plan : NO_LINES;
@@ -1635,7 +1682,6 @@ function frame(now) {
       pilot: pilotEye,
       body: d.body,
       lift: renderer.display(d.x, d.z, d.e, d.agl + 0.3)[1] - dPos[1],
-      link,
     }, dt);
     renderer.render(cam, {
       drone: { ...d, model: airframe.model, span: airframe.span },
