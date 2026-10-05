@@ -20,7 +20,7 @@ import { ENVS, encodeModel, decodeModel, modelChanges } from './rf/models.js';
 import { Renderer } from './gfx/renderer.js';
 import { OrbitCamera, CameraControls } from './gfx/camera.js';
 import { rampColor } from './gfx/meshes.js';
-import { DistChart, HistoryChart, PolarChart, Minimap, COL } from './charts.js';
+import { DistChart, HistoryChart, PolarChart, Minimap, COL, ABSOLUTE } from './charts.js';
 import { clamp, fmtHz, fmtRate, fmtDist, fmtPct } from './util.js';
 
 const hex = (h, a = 1) => [parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255, a];
@@ -69,7 +69,7 @@ const store = {
 };
 
 const DEFAULT_VIEW = {
-  scale: 'log', h0: null, gain: null, terrK: null, treeScale: 1, trackColor: 'margin', dpr: 2,
+  scale: 'log', h0: null, gain: null, terrK: null, treeScale: 1, trackColor: 'margin', dpr: 2, absCharts: false,
   layers: { trees: true, buildings: true, track: true, drops: true, los: true, refl: true, lobes: true, grid: true, xray: true, labels: true },
 };
 
@@ -692,6 +692,27 @@ for (const b of $('dist-mode').querySelectorAll('button')) {
   });
 }
 
+/** Absolute scales: fixed chart axes (ABSOLUTE in charts.js) instead of ones that follow the data. */
+const scaleToggles = [...document.querySelectorAll('.scale-toggle')];
+function applyChartScale() {
+  const on = !!state.view.absCharts;
+  distChart.fixed = histChart.fixed = polarChart.fixed = on;
+  const [lo, hi] = ABSOLUTE.sinr;
+  for (const b of scaleToggles) {
+    b.setAttribute('aria-pressed', String(on));
+    b.title = `${on ? 'Absolute scales: fixed axes' : 'Automatic scales: the axes follow the data'}. Absolute: SINR ${num(lo, 0)} … +${hi} dB, antenna gain ${num(ABSOLUTE.gain[0], 0)} … +${ABSOLUTE.gain[1]} dBi, the same for every link and technology - applies to all charts.`;
+  }
+}
+for (const b of scaleToggles) {
+  b.addEventListener('click', () => {
+    state.view.absCharts = !state.view.absCharts;
+    saveView();
+    applyChartScale();
+    updatePanel();
+  });
+}
+applyChartScale();
+
 // ------------------------------------------------------------------ settings drawer
 
 const SETTINGS = [
@@ -934,6 +955,7 @@ function buildHelp() {
     h('Tuning the model'),
     p('Settings → Model parameters (or "Model…" in the Influences card) exposes the knobs: canopy density and trunk-zone weight, foliage attenuation and its saturation, terrain and rooftop diffraction, whether street canyons cap the building loss, ground reflection strength and roughness, unlicensed-band noise - and per environment class the scattering (Rician K at low and high elevation), delay spread, shadowing σ and decorrelation, moving scatterers and noise rise. Everything acts at once; changed values are marked and can be reset one by one, and the link carries them.'),
   );
+  b.append(h('Charts'), p('The charts on the right follow the data by default: their axes rescale with every update. "Absolute scale" in a chart header fixes the axes of all charts - SINR −40 … +60 dB, PDF 0 … 60 %/dB, antenna gain −30 … +30 dBi - the same for every link and technology, so a curve\'s position means the same from one moment to the next. Values beyond the ends are pinned to the edge; the histogram shows the share of samples outside.'));
   b.append(h('Reading the verdict'), p('Each technology is judged from the last 5 s of samples: the 10 % SINR point against its most robust mode, the packet error rate, and the data rate it needs (video, telemetry, C2). Reasons list what limits it - blockage, interference, Doppler, delay spread or fading. Tx powers follow EU (ETSI) or US (FCC) practice and are assumptions, not certifications.'));
   b.append(el('p', 'help__build', `GeoRfSim · build ${BUILD.version}${BUILD.date ? ` · ${BUILD.date}` : ''}`));
 }
@@ -1397,6 +1419,30 @@ for (const [k, label] of FACTS) {
   factEls[k] = dd;
 }
 
+const budgetEls = {};
+for (const [k, label] of [['tx', 'Tx'], ['fs', 'free space'], ['rx', 'Rx'], ['noise', 'noise']]) {
+  const item = el('span', '', label);
+  budgetEls[k] = el('b', '', '–');
+  item.append(budgetEls[k]);
+  $('budget').append(item);
+}
+
+const DIST_FACTS = [
+  ['nb', '1 % fade · 1 antenna', 'How far the narrow-band SINR of a single antenna falls below its median at the 1 % point'],
+  ['eff', '1 % fade · effective', 'The same for the effective SINR: antenna diversity and the channel bandwidth average fades out'],
+  ['gain', 'Diversity gain', 'Fade depth saved by diversity and bandwidth (narrow-band minus effective)'],
+  ['bands', 'Independent sub-bands', 'Channel bandwidth ÷ coherence bandwidth Bc: with one, the whole channel fades at once (flat fading)'],
+];
+const distEls = {};
+for (const [k, label, title] of DIST_FACTS) {
+  const d = el('div');
+  const dt = el('dt', '', label);
+  dt.title = title;
+  distEls[k] = el('dd', '', '–');
+  d.append(dt, distEls[k]);
+  $('dist-facts').append(d);
+}
+
 function legendRow(box, items) {
   const key = items.map((i) => i[1]).join('|');
   if (box.dataset.key === key) return;
@@ -1445,7 +1491,7 @@ function updatePanel() {
       i.style.background = color;
       t.append(i);
     }
-    t.append(document.createTextNode(text));
+    t.append(el('span', '', text));
     stateBox.append(t);
   };
   tag(STATE_COLORS[ls.state], STATE_LABELS[ls.state]);
@@ -1455,7 +1501,7 @@ function updatePanel() {
   v.textContent = '';
   if (st) {
     v.className = `verdict st-${st.verdict.status}`;
-    v.append(el('span', 'ico', st.verdict.icon), document.createTextNode(`${st.verdict.label} · ${st.verdict.reasons[0] || ''}`));
+    v.append(el('span', 'ico', st.verdict.icon), el('span', 'verdict__text', `${st.verdict.label} · ${st.verdict.reasons[0] || ''}`));
   }
 
   const coh = 0.423 / Math.max(ls.fdMax, 0.01);
@@ -1474,17 +1520,10 @@ function updatePanel() {
   factEls.per.textContent = st ? fmtPct(st.per) : '–';
 
   // budget & influences
-  const budget = $('budget');
-  budget.textContent = '';
-  const bItem = (label, value) => {
-    const s = el('span', '', `${label} `);
-    s.append(el('b', '', value));
-    budget.append(s);
-  };
-  bItem('Tx', `${ls.tx} dBm`);
-  bItem('free space', `−${ls.lFs.toFixed(1)} dB`);
-  bItem('Rx', `${num(ls.prx, 1)} dBm`);
-  bItem('noise', `${num(ls.nDbm, 1)} dBm`);
+  budgetEls.tx.textContent = `${num(ls.tx, Number.isInteger(ls.tx) ? 0 : 1)} dBm`;
+  budgetEls.fs.textContent = `−${ls.lFs.toFixed(1)} dB`;
+  budgetEls.rx.textContent = `${num(ls.prx, 1)} dBm`;
+  budgetEls.noise.textContent = `${num(ls.nDbm, 1)} dBm`;
   setInfl('antGs', ls.gGs, `${ls.gsAnt.name} towards the drone`);
   setInfl('antAir', best.g, `${ls.airAnt.name} towards the ground node (best branch)`);
   setInfl('terrain', -ls.lT, `ν = ${num(ls.nuT, 2)}`);
@@ -1509,20 +1548,11 @@ function updatePanel() {
   // distribution
   const win = sim.window(idx);
   distChart.draw({ eff: win.eff, nb: win.nb, minSnr: ls.minSnr, K: ls.K });
-  legendRow($('dist-legend'), [[COL.s1, 'narrow-band, 1 antenna'], [COL.s2, 'effective (diversity + bandwidth)'], [COL.ink2, `Rician theory, K = ${ls.K > 0 ? `${num(ls.kDb, 1)} dB` : '0 (Rayleigh)'}`]]);
-  const note = $('dist-note');
-  note.textContent = '';
-  if (st) {
-    const nbFade = st.fadeDepth;
-    const effFade = st.effFade;
-    note.append(
-      document.createTextNode('1 % fade below median: '),
-      el('b', '', `${nbFade.toFixed(1)} dB`),
-      document.createTextNode(' narrow-band, '),
-      el('b', '', `${effFade.toFixed(1)} dB`),
-      document.createTextNode(` effective → diversity gain ${Math.max(0, nbFade - effFade).toFixed(1)} dB. ${ls.L > 1 ? `${ls.L} independent sub-bands (Bc ${fmtHz(ls.bc)}).` : 'Flat fading over the channel.'}`),
-    );
-  }
+  legendRow($('dist-legend'), [[COL.s1, 'narrow-band, 1 antenna'], [COL.s2, 'effective (diversity + bandwidth)'], [COL.ink2, 'Rician theory for the model K']]);
+  distEls.nb.textContent = st ? `${st.fadeDepth.toFixed(1)} dB` : '–';
+  distEls.eff.textContent = st ? `${st.effFade.toFixed(1)} dB` : '–';
+  distEls.gain.textContent = st ? `${Math.max(0, st.fadeDepth - st.effFade).toFixed(1)} dB` : '–';
+  distEls.bands.textContent = ls.L > 1 ? `${ls.L} · Bc ${fmtHz(ls.bc)}` : '1 · flat fading';
 
   // history
   const hist = sim.history(idx);

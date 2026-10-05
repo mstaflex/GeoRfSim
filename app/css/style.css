@@ -352,18 +352,29 @@ input:disabled, select:disabled { opacity: .55; }
   margin-bottom: 6px;
 }
 .card__hint { color: var(--muted); font-size: 11px; font-weight: 400; }
+.card__tools { display: flex; align-items: center; gap: 6px; }
 .card--link select { max-width: 230px; }
 
-.hero { display: flex; align-items: center; gap: 12px; margin: 2px 0 8px; }
-.hero__value { font-size: 40px; font-weight: 600; line-height: 1; letter-spacing: -.01em; }
-.hero__value small { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 4px; }
-.hero__side { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+/*
+ * Values change ten times a second: everything that shows one has a fixed
+ * box, so nothing around it moves or wraps differently from one value to
+ * the next.
+ */
+.hero { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 12px; margin: 2px 0 6px; }
+.hero__value { display: flex; flex-direction: column; align-items: flex-end; line-height: 1; }
+#hero-snr { min-width: 4.9ch; text-align: right; font-size: 40px; font-weight: 600; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
+.hero__value small { margin-top: 3px; font-size: 11px; color: var(--muted); }
 
-.state { display: flex; flex-wrap: wrap; gap: 4px; }
+/* path state on the first row, Rician K and environment in fixed halves of the second */
+.state { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: 20px 20px; gap: 4px; }
+.state .tag:first-child { grid-column: 1 / -1; }
 .tag {
   display: inline-flex;
   align-items: center;
+  justify-self: start;
   gap: 5px;
+  max-width: 100%;
+  min-width: 0;
   font-size: 11.5px;
   padding: 1px 7px;
   border-radius: 10px;
@@ -371,9 +382,12 @@ input:disabled, select:disabled { opacity: .55; }
   border: 1px solid var(--line);
   white-space: nowrap;
 }
-.tag i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+.tag span { overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.tag i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
 
-.verdict { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; }
+/* two lines reserved, never more */
+.verdict { display: flex; align-items: flex-start; gap: 6px; height: 34px; margin-bottom: 8px; font-size: 12.5px; font-weight: 600; line-height: 17px; }
+.verdict__text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; font-variant-numeric: tabular-nums; }
 .verdict .ico {
   width: 18px;
   height: 18px;
@@ -402,13 +416,14 @@ input:disabled, select:disabled { opacity: .55; }
 
 /* link budget / influences */
 .budget {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px 16px;
   font-size: 12px;
   color: var(--ink-2);
   margin-bottom: 6px;
 }
+.budget span { display: flex; justify-content: space-between; gap: 6px; white-space: nowrap; }
 .budget b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
 
 .infl { display: grid; grid-template-columns: 128px minmax(0, 1fr) 52px; gap: 3px 8px; align-items: center; }
@@ -434,9 +449,9 @@ input:disabled, select:disabled { opacity: .55; }
 .comp__title { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
 .comp__bar { display: flex; height: 12px; gap: 2px; border-radius: 4px; overflow: hidden; }
 .comp__bar span { display: block; height: 100%; min-width: 0; }
-.comp__legend { display: flex; flex-wrap: wrap; gap: 3px 12px; margin-top: 5px; font-size: 11.5px; color: var(--ink-2); }
-.comp__legend b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
-.comp__legend span { display: inline-flex; align-items: center; gap: 5px; }
+.comp__legend { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px 16px; margin-top: 5px; font-size: 11.5px; color: var(--ink-2); }
+.comp__legend b { margin-left: auto; color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.comp__legend span { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
 
 /* charts */
 .chart { position: relative; }
@@ -444,8 +459,13 @@ input:disabled, select:disabled { opacity: .55; }
 .chart--polar canvas { max-width: 320px; margin: 0 auto; }
 .chart-legend { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 11.5px; color: var(--ink-2); margin-bottom: 4px; }
 .chart-legend span { display: inline-flex; align-items: center; gap: 5px; }
+/* one item per line: the antenna names change with the technology, the height does not */
+.chart-legend--rows { display: grid; grid-template-columns: minmax(0, 1fr); }
+.chart-legend--rows span { display: flex; min-width: 0; white-space: nowrap; overflow: hidden; }
 .note { margin: 6px 0 0; font-size: 11.5px; color: var(--muted); }
 .note b { color: var(--ink-2); font-weight: 600; }
+.facts--dist { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 6px; }
+.facts--dist dt { cursor: help; }
 
 .tip {
   position: absolute;
@@ -466,7 +486,8 @@ input:disabled, select:disabled { opacity: .55; }
 .ant-sel label { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--muted); }
 .ant-sel select { width: 100%; }
 
-.refs { width: 100%; border-collapse: collapse; font-size: 12px; }
+.refs { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
+.refs th { width: 58%; }
 .refs th { text-align: left; font-weight: 400; color: var(--ink-2); padding: 3px 4px 3px 0; }
 .refs td { text-align: right; font-variant-numeric: tabular-nums; padding: 3px 0; white-space: nowrap; }
 .refs tr + tr { border-top: 1px solid var(--grid); }

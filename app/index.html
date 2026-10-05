@@ -92,11 +92,9 @@
       </div>
       <div class="hero">
         <div class="hero__value"><span id="hero-snr">–</span><small>dB SINR</small></div>
-        <div class="hero__side">
-          <div class="state" id="link-state"></div>
-          <div class="verdict" id="link-verdict"></div>
-        </div>
+        <div class="state" id="link-state"></div>
       </div>
+      <div class="verdict" id="link-verdict"></div>
       <dl class="facts" id="facts"></dl>
     </section>
 
@@ -117,19 +115,23 @@
     <section class="card">
       <div class="card__head">
         <h2>Distribution · last 5 s</h2>
-        <div class="seg seg--small" role="group" aria-label="Distribution view" id="dist-mode">
-          <button type="button" data-mode="pdf" aria-pressed="true">PDF</button>
-          <button type="button" data-mode="cdf" aria-pressed="false">CDF</button>
+        <div class="card__tools">
+          <div class="seg seg--small" role="group" aria-label="Distribution view" id="dist-mode">
+            <button type="button" data-mode="pdf" aria-pressed="true">PDF</button>
+            <button type="button" data-mode="cdf" aria-pressed="false">CDF</button>
+          </div>
+          <button type="button" class="btn btn--mini btn--toggle scale-toggle" aria-pressed="false">Absolute scale</button>
         </div>
       </div>
       <div class="chart-legend" id="dist-legend"></div>
       <div class="chart"><canvas id="chart-dist" height="190"></canvas><div class="tip" id="tip-dist" hidden></div></div>
-      <p class="note" id="dist-note"></p>
+      <dl class="facts facts--dist" id="dist-facts"></dl>
     </section>
 
     <section class="card">
       <div class="card__head">
         <h2>SINR · last 30 s</h2>
+        <button type="button" class="btn btn--mini btn--toggle scale-toggle" aria-pressed="false">Absolute scale</button>
       </div>
       <div class="chart-legend" id="hist-legend"></div>
       <div class="chart"><canvas id="chart-hist" height="150"></canvas><div class="tip" id="tip-hist" hidden></div></div>
@@ -144,7 +146,7 @@
         <label>Ground <select id="sel-gsant"></select></label>
         <label>Drone <select id="sel-airant"></select></label>
       </div>
-      <div class="chart-legend" id="polar-legend"></div>
+      <div class="chart-legend chart-legend--rows" id="polar-legend"></div>
       <div class="chart chart--polar"><canvas id="chart-polar" height="220"></canvas></div>
     </section>
 

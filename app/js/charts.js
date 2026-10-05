@@ -24,6 +24,13 @@ export const COL = {
 };
 const FONT = '11px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
 
+/**
+ * Absolute scales: fixed axes that do not follow the data, the same for every
+ * link and technology. They hold almost all SINR values the simulation
+ * produces (90 % lie within −36 … +47 dB); the rest is pinned to the edges.
+ */
+export const ABSOLUTE = { sinr: [-40, 60], pdfMax: 0.6, gain: [-30, 30] };
+
 function prep(canvas, cssH) {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const w = Math.max(50, canvas.clientWidth || canvas.parentElement.clientWidth);
@@ -89,6 +96,7 @@ export class DistChart {
     this.canvas = canvas;
     this.tip = tip;
     this.mode = 'pdf';
+    this.fixed = false; // absolute scales
     this.cssH = 190;
     this.last = null;
     canvas.addEventListener('pointermove', (e) => this.#hover(e));
@@ -112,20 +120,33 @@ export class DistChart {
     }
     const nbS = Float32Array.from(d.nb).sort();
     const effS = Float32Array.from(d.eff).sort();
-    let lo = Math.floor(Math.min(quantile(nbS, 0.002), quantile(effS, 0.002), d.minSnr) - 2);
-    let hi = Math.ceil(Math.max(quantile(nbS, 0.998), quantile(effS, 0.998)) + 2);
-    if (hi - lo < 16) {
-      const c = (hi + lo) / 2;
-      lo = Math.floor(c - 8);
-      hi = Math.ceil(c + 8);
+    let lo;
+    let hi;
+    let bin;
+    if (this.fixed) {
+      [lo, hi] = ABSOLUTE.sinr;
+      bin = 1;
+    } else {
+      lo = Math.floor(Math.min(quantile(nbS, 0.002), quantile(effS, 0.002), d.minSnr) - 2);
+      hi = Math.ceil(Math.max(quantile(nbS, 0.998), quantile(effS, 0.998)) + 2);
+      if (hi - lo < 16) {
+        const c = (hi + lo) / 2;
+        lo = Math.floor(c - 8);
+        hi = Math.ceil(c + 8);
+      }
+      bin = hi - lo > 60 ? 2 : hi - lo > 28 ? 1 : 0.5;
     }
     const span = hi - lo;
-    const bin = span > 60 ? 2 : span > 28 ? 1 : 0.5;
     const nb = Math.ceil(span / bin);
     const hNb = new Float32Array(nb);
     const hEff = new Float32Array(nb);
-    for (const v of d.nb) hNb[clamp(Math.floor((v - lo) / bin), 0, nb - 1)]++;
-    for (const v of d.eff) hEff[clamp(Math.floor((v - lo) / bin), 0, nb - 1)]++;
+    // on the absolute scale, samples beyond the ends are counted there instead of piling up in the end bins
+    const out = { below: 0, above: 0 };
+    for (const v of d.nb) {
+      if (this.fixed && (v < lo || v >= hi)) out[v < lo ? 'below' : 'above']++;
+      else hNb[clamp(Math.floor((v - lo) / bin), 0, nb - 1)]++;
+    }
+    for (const v of d.eff) if (!this.fixed || (v >= lo && v < hi)) hEff[clamp(Math.floor((v - lo) / bin), 0, nb - 1)]++;
     const n = d.nb.length;
     for (let i = 0; i < nb; i++) {
       hNb[i] /= n * bin;
@@ -150,13 +171,24 @@ export class DistChart {
     const X = (v) => pad.l + ((v - lo) / span) * pw;
     this.last = { lo, hi, bin, nb, hNb, hEff, nbS, effS, X, pad, pw, ph, tx, ty, tc, minSnr: d.minSnr };
 
+    // the data stays inside the plot (on the absolute scale it can reach beyond)
+    const clip = () => {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(pad.l, pad.t - 1, pw, ph + 1);
+      ctx.clip();
+    };
     if (this.mode === 'pdf') {
-      let ymax = 0;
-      for (let i = 0; i < nb; i++) ymax = Math.max(ymax, hNb[i], hEff[i]);
-      for (const v of ty) ymax = Math.max(ymax, v);
-      ymax *= 1.08;
-      const Y = (v) => pad.t + ph - (v / ymax) * ph;
-      this.#yGrid(ctx, pad, pw, ph, ymax, (v) => `${(v * 100).toFixed(v * 100 < 1 ? 1 : 0)}`, Y, niceStep(ymax, 3), '%/dB');
+      let ymax = ABSOLUTE.pdfMax;
+      if (!this.fixed) {
+        ymax = 0;
+        for (let i = 0; i < nb; i++) ymax = Math.max(ymax, hNb[i], hEff[i]);
+        for (const v of ty) ymax = Math.max(ymax, v);
+        ymax *= 1.08;
+      }
+      const Y = (v) => pad.t + ph - (Math.min(v, ymax) / ymax) * ph;
+      this.#yGrid(ctx, pad, pw, ph, ymax, (v) => `${(v * 100).toFixed(v * 100 < 1 ? 1 : 0)}`, Y, this.fixed ? 0.2 : niceStep(ymax, 3), '%/dB');
+      clip();
       // narrow-band histogram bars
       const bw = (bin / span) * pw;
       const gap = bw > 6 ? 1 : 0;
@@ -189,6 +221,19 @@ export class DistChart {
       ctx.beginPath();
       tx.forEach((x, i) => (i ? ctx.lineTo(X(x), Y(ty[i])) : ctx.moveTo(X(x), Y(ty[i]))));
       ctx.stroke();
+      ctx.restore();
+      // share of the samples beyond the ends of the absolute scale
+      ctx.fillStyle = COL.ink2;
+      ctx.textBaseline = 'top';
+      const share = (k) => `${(out[k] / n) * 100 < 1 ? '<1' : Math.round((out[k] / n) * 100)} %`;
+      if (out.below) {
+        ctx.textAlign = 'left';
+        ctx.fillText(`◂ ${share('below')}`, pad.l + 3, pad.t + 14);
+      }
+      if (out.above) {
+        ctx.textAlign = 'right';
+        ctx.fillText(`${share('above')} ▸`, pad.l + pw - 3, pad.t + 14);
+      }
       this.last.Y = Y;
     } else {
       const LMIN = -3;
@@ -206,6 +251,7 @@ export class DistChart {
         ctx.stroke();
         ctx.fillText(lab, pad.l - 4, y);
       }
+      clip();
       const cdfLine = (sorted, color, width) => {
         ctx.strokeStyle = color;
         ctx.lineWidth = width;
@@ -240,6 +286,7 @@ export class DistChart {
         } else ctx.lineTo(X(x), Y(Math.min(tc[i], 1)));
       });
       ctx.stroke();
+      ctx.restore();
       this.last.Y = Y;
     }
 
@@ -361,6 +408,7 @@ export class HistoryChart {
   constructor(canvas, tip) {
     this.canvas = canvas;
     this.tip = tip;
+    this.fixed = false; // absolute scale
     this.cssH = 150;
     canvas.addEventListener('pointermove', (e) => {
       const r = canvas.getBoundingClientRect();
@@ -388,17 +436,20 @@ export class HistoryChart {
       ctx.fillText('collecting samples …', pad.l + 8, pad.t + 20);
       return;
     }
-    let lo = Infinity;
-    let hi = -Infinity;
-    for (let i = 0; i < n; i++) {
-      const v = d.v[i];
-      if (v < lo) lo = v;
-      if (v > hi) hi = v;
+    let [lo, hi] = ABSOLUTE.sinr;
+    if (!this.fixed) {
+      lo = Infinity;
+      hi = -Infinity;
+      for (let i = 0; i < n; i++) {
+        const v = d.v[i];
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
+      lo = Math.max(lo, hi - 70);
+      lo = Math.floor(Math.min(lo, d.minSnr - 3) / 5) * 5;
+      hi = Math.ceil(Math.max(hi, d.minSnr + 3) / 5) * 5;
+      if (hi - lo < 20) hi = lo + 20;
     }
-    lo = Math.max(lo, hi - 70);
-    lo = Math.floor(Math.min(lo, d.minSnr - 3) / 5) * 5;
-    hi = Math.ceil(Math.max(hi, d.minSnr + 3) / 5) * 5;
-    if (hi - lo < 20) hi = lo + 20;
     const X = (i) => pad.l + pw - ((n - 1 - i) / d.rate / span) * pw;
     const Y = (v) => pad.t + ph - ((clamp(v, lo, hi) - lo) / (hi - lo)) * ph;
     // grid
@@ -516,12 +567,13 @@ export class HistoryChart {
 export class PolarChart {
   constructor(canvas) {
     this.canvas = canvas;
+    this.fixed = false; // absolute scale
     this.cssH = 220;
   }
 
   /**
    * series: [{ color, cut: (deg) → dBi, marker: deg }], angle 0° = horizontal towards
-   * the drone, 90° = up. Rings span [top − 40, top] dBi.
+   * the drone, 90° = up. Rings span [top − 40, top] dBi, or the absolute range.
    */
   draw(series) {
     const { ctx, w, h } = prep(this.canvas, this.cssH);
@@ -539,7 +591,11 @@ export class PolarChart {
       return pts;
     });
     top = Math.ceil(top / 10) * 10;
-    const range = 40;
+    let range = 40;
+    if (this.fixed) {
+      top = ABSOLUTE.gain[1];
+      range = ABSOLUTE.gain[1] - ABSOLUTE.gain[0];
+    }
     const rad = (g) => (clamp(g - (top - range), 0, range) / range) * R;
     ctx.strokeStyle = COL.grid;
     ctx.lineWidth = 1;

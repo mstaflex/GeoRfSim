@@ -99,6 +99,13 @@ await step('top, isometric and side views', async () => {
   }
   await page.keyboard.press('f');
 });
+await step('absolute chart scales', async () => {
+  await page.click('.scale-toggle >> nth=0');
+  await until(() => window.georfsim.state.view.absCharts === true && [...document.querySelectorAll('.scale-toggle')].every((b) => b.getAttribute('aria-pressed') === 'true'));
+  await page.waitForTimeout(300);
+  await page.click('.scale-toggle >> nth=1');
+  await until(() => window.georfsim.state.view.absCharts === false);
+});
 await step('flight-profile editor', async () => {
   await page.click('#btn-edit-flight');
   await until(() => !document.getElementById('flight-editor').hidden);

@@ -144,11 +144,20 @@ free-flight preferences are remembered in `localStorage`, in this browser only.
   of the narrow-band single-antenna SINR, overlaid with the Rician theory for
   the current K. The *effective* SINR after antenna diversity and
   wideband/frequency diversity is shown next to it. 1 % and 10 % points are
-  marked, together with the fade depth and the diversity gain.
+  marked. Below the chart: the 1 % fade depth for one antenna and for the
+  effective SINR, the diversity gain and the number of independent sub-bands.
 * **SINR · last 30 s.** Instantaneous vs. large-scale SINR against the most
   robust mode's threshold.
 * **Antennas.** The elevation cut of both antennas in the plane of the link,
   with the current direction marked.
+* **Absolute scale** (in the chart headers) switches all charts from axes
+  that follow the data to fixed ones, the same for every link and
+  technology: SINR −40 … +60 dB, PDF 0 … 60 %/dB, antenna gain
+  −30 … +30 dBi. Values beyond the ends are pinned to the edge; the
+  histogram shows the share of samples outside. The choice is remembered.
+
+All numbers in the panel have fixed places: a value changing ten times a
+second never pushes the rest of the panel around.
 * **Reference models.** Free space, this simulation, 3GPP TR 36.777 /
   TR 38.901 (LOS/NLOS and P(LOS)) and Al-Hourani et al. for the same geometry.
 * **Technology table.** Per technology: band and bandwidth, path (with its
